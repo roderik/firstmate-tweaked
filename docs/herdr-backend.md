@@ -525,6 +525,8 @@ When the selected named server is not running, the adapter launches it without t
 - The supervision-model override.
 
 Herdr passes its server startup environment to every later pane, so retaining those values could misroute panes for another Firstmate home or harness.
+The launched server leads its own session, because Herdr accepts a saved-machine attachment (`herdr machine add <host> --remote-session <name>`) only from a server whose `getsid(0)` equals its pid.
+`fm_backend_herdr_cli` gets there through Perl `POSIX::setsid`, forking a session-leader child when `setsid` refuses a process-group leader, so starting a server fails with an error when `perl` is not on `PATH`.
 An already-running server is reused without restart or environment changes.
 Explicit named-session routing and unrelated launch environment remain intact.
 

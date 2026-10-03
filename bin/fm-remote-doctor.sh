@@ -17,11 +17,13 @@
 # shell (`-l -c`) so the server inherits the account's own environment; the
 # gui/<uid> launchd domain it is bootstrapped into, not the shell, is what
 # gives the server and its panes the Aqua audit session and login-keychain
-# access. The guard execs the server in the foreground under launchd, leaves an
-# Aqua-born server alone, and takes the session over from a server born
-# outside that session (an SSH remote attach wins the socket at boot), because
-# such a server's panes cannot read the login keychain;
-# bin/fm-remote-herdr-owner-lib.sh owns that birth test. Doctor remains
+# access. The guard starts the server in the foreground under launchd as a
+# session leader (Herdr's saved machines require it), leaves an Aqua-born
+# session-leader server alone, and takes the session over from a server proven
+# not to lead its session or born outside the Aqua session (an SSH remote
+# attach wins the socket at boot), because such a server's panes cannot read
+# the login keychain; bin/fm-remote-herdr-guard.sh owns that decision and
+# bin/fm-remote-herdr-owner-lib.sh owns the birth test. Doctor remains
 # invokable over the plain-SSH bootstrap path to inspect and repair that worker.
 # SSH cannot create an Aqua session, so a host with no GUI login is a human
 # gap rather than something --fix attempts to bypass.
@@ -192,13 +194,15 @@ herdr_server_birth() {
 }
 
 # On darwin the session is ready only when its server was born in the Aqua
-# login session; elsewhere any running server is.
+# login session and is not proven to lack session leadership, which Herdr
+# requires for saved machines; elsewhere any running server is.
 herdr_server_aqua_owned() {
   local birth
   herdr_server_running || return 1
   [ "$PLATFORM" = darwin ] || return 0
   birth=$(herdr_server_birth)
-  fm_remote_herdr_birth_is_aqua "${birth%% *}"
+  fm_remote_herdr_birth_is_aqua "${birth%% *}" || return 1
+  fm_remote_herdr_process_is_session_leader "${birth#* }" || [ "$?" -ne 1 ]
 }
 
 launch_agent_is_aqua() {
@@ -672,7 +676,14 @@ check_herdr_server() {
     birth=$(herdr_server_birth)
     case "$birth" in
       launchd\ *|worker\ *)
-        record herdr-server "ok: session $HERDR_SESSION_NAME is running in the Aqua login session (pid ${birth#* }, ${birth%% *})"
+        if fm_remote_herdr_process_is_session_leader "${birth#* }"; then
+          record herdr-server "ok: session $HERDR_SESSION_NAME is running in the Aqua login session (pid ${birth#* }, ${birth%% *}) and is a session leader"
+        elif [ "$?" -eq 1 ]; then
+          record herdr-server "fixable: session $HERDR_SESSION_NAME is served by pid ${birth#* } but that process is not a session leader, so saved machines refuse it" \
+            "rerun this command with --fix so the launch agent restarts the server as its own session leader"
+        else
+          record herdr-server "ok: session $HERDR_SESSION_NAME is running in the Aqua login session (pid ${birth#* }, ${birth%% *}); whether it is a session leader cannot be read"
+        fi
         ;;
       nolsof)
         record herdr-server "human: session $HERDR_SESSION_NAME is running but lsof does not resolve, so its server's birth cannot be proven" \
