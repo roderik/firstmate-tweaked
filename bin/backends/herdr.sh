@@ -394,9 +394,19 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
   # refusal can be recognized and retried once on a compatible client; see
   # "client selection" below. A failed command's stderr is replayed verbatim.
   # The long-lived `server` launch is exec'd straight through: buffering its
-  # stderr would hold this call open for the server's whole lifetime.
+  # stderr would hold this call open for the server's whole lifetime. It runs
+  # as its own session leader because Herdr accepts a saved-machine attach
+  # only when the server reports getsid(0) == getpid(); when setsid(2) refuses
+  # a process-group leader, a forked child takes the session instead.
   if [ "${1:-}" = server ]; then
-    HERDR_SESSION="$session" "$client_bin" "$@" --session "$session"
+    command -v perl >/dev/null 2>&1 || { echo "error: perl is required to start the herdr server for session '$session' as a session leader" >&2; return 1; }
+    HERDR_SESSION="$session" perl -MPOSIX -e '
+      if (POSIX::setsid() != $$) {
+        defined(my $child = fork) or die "fork: $!\n";
+        exit 0 if $child;
+        POSIX::setsid() == $$ or die "setsid: $!\n";
+      }
+      exec @ARGV or die "exec: $!\n"' "$client_bin" "$@" --session "$session"
     return $?
   fi
   failed_bin=$client_bin
@@ -1651,8 +1661,9 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # NOT auto-start the server, so this must run before any workspace/tab/pane
 # call. The server outlives its launcher and passes its startup environment to
 # every later pane, so remove home, harness identity, and supervision selection
-# inherited from whichever agent happened to start it. Bounded poll for the
-# server to report running.
+# inherited from whichever agent happened to start it. fm_backend_herdr_cli
+# starts it as its own session leader so saved Herdr machines accept it.
+# Bounded poll for the server to report running.
 fm_backend_herdr_server_ensure() {  # <session>
   local session=$1 running out i
   running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
