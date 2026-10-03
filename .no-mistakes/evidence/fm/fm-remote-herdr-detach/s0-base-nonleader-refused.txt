@@ -1,0 +1,9 @@
+### Contrast: BASE commit ed015c0 backend server_ensure (pre-fix) on lab session fm-lab-base-3241559-32312
+ensure rc=0
+    PID    PPID    PGID     SID COMMAND
+3244463 3244461 3244449 3244439 herdr server --session fm-lab-base-3241559-32312
+is_session_leader rc=1 (1 = not a leader)
+$ herdr machine add localhost --remote-session fm-lab-base-3241559-32312   (isolated client HOME)
+remote herdr server on localhost (session fm-lab-base-3241559-32312) is still running v0.9.3; it will use 0.9.3 after it restarts.
+error: remote server is not ready for saved machines; machine was not saved
+machine add rc=1

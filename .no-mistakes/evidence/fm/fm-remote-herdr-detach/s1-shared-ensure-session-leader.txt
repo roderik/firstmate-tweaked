@@ -1,0 +1,22 @@
+### Scenario: shared backend fm_backend_herdr_server_ensure starts a session-leader server (target commit 48da497)
+$ bash -c '. bin/backends/herdr.sh; fm_backend_herdr_server_ensure fm-lab-leader-3219162-5900'
+ensure rc=0
+$ ps -o pid,ppid,pgid,sid,args -p <server>
+    PID    PPID    PGID     SID COMMAND
+3225394 3225392 3225394 3225394 herdr server --session fm-lab-leader-3219162-5900
+$ . bin/fm-remote-herdr-owner-lib.sh; fm_remote_herdr_process_is_session_leader 3225394
+rc=0
+$ herdr status --json --session fm-lab-leader-3219162-5900 | jq .server
+{
+  "running": true,
+  "detached_server_daemon": null,
+  "pid": null
+}
+
+$ herdr machine add localhost --remote-session fm-lab-leader-3219162-5900   (isolated client HOME=/tmp/fm-herdr-client.9j77OV)
+Saved SSH machine 2567ed2d10655c51b397f5e0f62e7ba1. Remote server is ready.
+Open Herdr clients connect automatically.
+machine add rc=0
+$ herdr machine list (isolated client)
+53a0decd60cc7418f6fbfa6366915052	fmlab-leader	localhost	fm-lab-leader-3219162-5900	enabled
+2567ed2d10655c51b397f5e0f62e7ba1	fmlab-leader2	localhost	fm-lab-leader-3219162-5900	enabled

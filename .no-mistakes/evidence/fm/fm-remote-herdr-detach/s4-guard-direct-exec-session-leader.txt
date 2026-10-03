@@ -1,0 +1,32 @@
+### Scenario: guard launched already leading its session (launchd's usual spawn) -> execs herdr directly, server keeps the job pid
+job pid=3304305
+--- guard log:
+fm-remote-herdr-guard: no server owns session fm-lab-base-3241559-32312
+fm-remote-herdr-guard: starting the herdr server for session fm-lab-base-3241559-32312 as its own session leader (pid 3304305)
+herdr server running; you can use any herdr CLI command in another terminal.
+api socket: /home/roderik/.config/herdr/sessions/fm-lab-base-3241559-32312/herdr.sock
+client socket: /home/roderik/.config/herdr/sessions/fm-lab-base-3241559-32312/herdr-client.sock
+logs: /home/roderik/.config/herdr/sessions/fm-lab-base-3241559-32312/herdr-server.log
+did you mean to open the Herdr TUI? run `herdr`; you do not need `herdr server`.
+--- herdr server processes for session:
+    PID    PPID    PGID     SID COMMAND
+3304305 3304303 3304305 3304305 /home/roderik/.local/bin/herdr server --session fm-lab-base-3241559-32312
+job pid 3304305 is_session_leader rc=0
+$ herdr machine add localhost --remote-session fm-lab-base-3241559-32312 (isolated client)
+Saved SSH machine 2cdb3019c7b622b0b4c500e7b1c663d3. Remote server is ready.
+Open Herdr clients connect automatically.
+machine add rc=0
+### Re-launch the guard while its own session-leader server runs (launchd retry): it must not take over
+fm-remote-herdr-guard: session fm-lab-base-3241559-32312 is running but no herdr process could be proven to own /home/roderik/.config/herdr/sessions/fm-lab-base-3241559-32312/herdr.sock
+fm-remote-herdr-guard: session fm-lab-base-3241559-32312 is served by an unproven process born outside the Aqua login session (unknown); its panes cannot reach the login keychain, taking the session over
+fm-remote-herdr-guard: session fm-lab-base-3241559-32312 released its socket after 0 tenths of a second
+fm-remote-herdr-guard: starting the herdr server for session fm-lab-base-3241559-32312 as its own session leader (pid 3306354)
+herdr server running; you can use any herdr CLI command in another terminal.
+api socket: /home/roderik/.config/herdr/sessions/fm-lab-base-3241559-32312/herdr.sock
+client socket: /home/roderik/.config/herdr/sessions/fm-lab-base-3241559-32312/herdr-client.sock
+logs: /home/roderik/.config/herdr/sessions/fm-lab-base-3241559-32312/herdr-server.log
+did you mean to open the Herdr TUI? run `herdr`; you do not need `herdr server`.
+
+[killed]
+
+NOTE: the re-launch sub-step is not a valid Linux check. Off darwin, birth is always 'unknown' (no launchd/Aqua proof), so the guard takes over by design; that behavior predates this change. The Aqua-born leave-alone branch can only run on macOS.
