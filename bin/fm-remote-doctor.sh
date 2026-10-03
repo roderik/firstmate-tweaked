@@ -17,11 +17,13 @@
 # shell (`-l -c`) so the server inherits the account's own environment; the
 # gui/<uid> launchd domain it is bootstrapped into, not the shell, is what
 # gives the server and its panes the Aqua audit session and login-keychain
-# access. The guard execs the server in the foreground under launchd, leaves an
-# Aqua-born server alone, and takes the session over from a server born
-# outside that session (an SSH remote attach wins the socket at boot), because
-# such a server's panes cannot read the login keychain;
-# bin/fm-remote-herdr-owner-lib.sh owns that birth test. Doctor remains
+# access. The guard starts the server in the foreground under launchd as a
+# session leader (Herdr's saved machines require it), leaves an Aqua-born
+# session-leader server alone, and takes the session over from a server proven
+# not to lead its session or born outside the Aqua session (an SSH remote
+# attach wins the socket at boot), because such a server's panes cannot read
+# the login keychain; bin/fm-remote-herdr-guard.sh owns that decision and
+# bin/fm-remote-herdr-owner-lib.sh owns the birth test. Doctor remains
 # invokable over the plain-SSH bootstrap path to inspect and repair that worker.
 # SSH cannot create an Aqua session, so a host with no GUI login is a human
 # gap rather than something --fix attempts to bypass.
