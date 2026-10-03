@@ -1,0 +1,16 @@
+# before: base-commit server pid=1634758
+    PID    PGID     SID CMD
+1634758 1634743 1634739 herdr server --session fm-lab-base-1633805-22040
+session_leader rc=1
+fm-remote-herdr-guard: session fm-lab-base-1633805-22040 is running but no herdr process could be proven to own /home/roderik/.config/herdr/sessions/fm-lab-base-1633805-22040/herdr.sock
+fm-remote-herdr-guard: session fm-lab-base-1633805-22040 is served by an unproven process born outside the Aqua login session (unknown); its panes cannot reach the login keychain, taking the session over
+fm-remote-herdr-guard: session fm-lab-base-1633805-22040 released its socket after 0 tenths of a second
+fm-remote-herdr-guard: starting the herdr server for session fm-lab-base-1633805-22040 as its own session leader (pid 1677681)
+# after: server pid=1677681
+    PID    PGID     SID CMD
+1677681 1677681 1677681 /home/roderik/.local/bin/herdr server --session fm-lab-base-1633805-22040
+session_leader rc=0
+$ herdr machine add localhost --label fm-lab-base-takeover --remote-session fm-lab-base-1633805-22040
+Saved SSH machine 9d5a5f68a51f4d1de5c878c90a13f0cc. Remote server is ready.
+Open Herdr clients connect automatically.
+exit=0

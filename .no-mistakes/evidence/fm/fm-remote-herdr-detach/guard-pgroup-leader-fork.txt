@@ -1,0 +1,21 @@
+# Guard launched as a process-group leader that does NOT lead its session (the shape where setsid(2) returns EPERM)
+fm-remote-herdr-guard: no server owns session fm-lab-guard-1642123-31916
+fm-remote-herdr-guard: starting the herdr server for session fm-lab-guard-1642123-31916 as its own session leader (pid 1648465)
+herdr server running; you can use any herdr CLI command in another terminal.
+api socket: /home/roderik/.config/herdr/sessions/fm-lab-guard-1642123-31916/herdr.sock
+client socket: /home/roderik/.config/herdr/sessions/fm-lab-guard-1642123-31916/herdr-client.sock
+logs: /home/roderik/.config/herdr/sessions/fm-lab-guard-1642123-31916/herdr-server.log
+did you mean to open the Herdr TUI? run `herdr`; you do not need `herdr server`.
+guard pid=1648465
+    PID    PPID    PGID     SID CMD
+1648465 1648463 1648465 1648456 perl -MPOSIX -e      if (POSIX::setsid() == $$) { exec @ARGV or die "exec: $!\n" }     defined(my $child = fork) or die "fork: $!\n";     if (!$child) { POSIX::setsid() == $$ or die "setsid: $!\n"; exec @ARGV or die "exec: $!\n" }     $SIG{$_} = sub { kill $_[0], $child } for qw(TERM INT HUP QUIT);     1 while waitpid($child, 0) == -1 && $!{EINTR};     exit(($? & 127) ? 128 + ($? & 127) : $? >> 8) /home/roderik/.local/bin/herdr server --session fm-lab-guard-1642123-31916
+1648480 1648465 1648480 1648480 /home/roderik/.local/bin/herdr server --session fm-lab-guard-1642123-31916
+server pid=1648480 session_leader rc=0
+$ herdr machine add localhost --label fm-lab-guard --remote-session fm-lab-guard-1642123-31916
+Saved SSH machine d7d01350890089bd6c1413be5d086c0b. Remote server is ready.
+Open Herdr clients connect automatically.
+exit=0
+# SIGTERM to the guard (launchd job pid) must reach the forked server and propagate its status
+guard exit=0
+server 1648480 terminated with the guard
+status running: false

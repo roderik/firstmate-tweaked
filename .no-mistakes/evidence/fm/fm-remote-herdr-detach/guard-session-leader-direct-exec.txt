@@ -1,0 +1,11 @@
+# Guard launched already leading its own session (launchd's usual job spawn)
+fm-remote-herdr-guard: no server owns session fm-lab-guard-1642123-31916
+fm-remote-herdr-guard: starting the herdr server for session fm-lab-guard-1642123-31916 as its own session leader (pid 1659799)
+    PID    PPID    PGID     SID CMD
+1659799 1659797 1659799 1659799 /home/roderik/.local/bin/herdr server --session fm-lab-guard-1642123-31916
+children of guard pid: 1659879 1660106 1660111 (these are herdr server helper processes; the guard pid itself is now the herdr server, i.e. exec in place)
+server pid=1659799 (== guard/job pid) session_leader rc=0
+$ herdr machine add localhost --label fm-lab-guard-direct --remote-session fm-lab-guard-1642123-31916
+Saved SSH machine 0b64190be9f3fb9650b56ccce840817f. Remote server is ready.
+Open Herdr clients connect automatically.
+exit=0

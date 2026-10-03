@@ -1,0 +1,8 @@
+$ git rev-parse --short HEAD -> 568cf65
+$ bash -c '. bin/backends/herdr.sh; fm_backend_herdr_server_ensure fm-lab-leader-1619113-18880'
+server_ensure exit=0
+status: {"status":"running","running":true,"version":"0.9.3","protocol":22,"capabilities":{"live_handoff":true,"detached_server_daemon":true,"endpoint_protocol_generation":1,"surface_interest":true,"health_check":true,"ssh_agent_registration":true},"compatible":true,"endpoint_compatible":true,"socket":"/home/roderik/.config/herdr/sessions/fm-lab-leader-1619113-18880/herdr.sock","session":"fm-lab-leader-1619113-18880","restart_needed":false,"server_binary_stale":false}
+server pid=1621440
+    PID    PPID    PGID     SID CMD
+1621440 1621438 1621440 1621440 herdr server --session fm-lab-leader-1619113-18880
+fm_remote_herdr_process_is_session_leader rc=0

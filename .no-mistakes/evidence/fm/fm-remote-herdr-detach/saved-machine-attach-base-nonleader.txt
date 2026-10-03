@@ -1,0 +1,9 @@
+# BASE commit ed015c0 (before the fix): fm_backend_herdr_server_ensure fm-lab-base-1633805-22040
+server_ensure exit=0
+    PID    PPID    PGID     SID CMD
+1634758 1634756 1634743 1634739 herdr server --session fm-lab-base-1633805-22040
+fm_remote_herdr_process_is_session_leader rc=1
+$ herdr machine add localhost --label fm-lab-base --remote-session fm-lab-base-1633805-22040
+remote herdr server on localhost (session fm-lab-base-1633805-22040) is still running v0.9.3; it will use 0.9.3 after it restarts.
+error: remote server is not ready for saved machines; machine was not saved
+exit=1

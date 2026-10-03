@@ -1,0 +1,8 @@
+# target commit 568cf65: server started by fm_backend_herdr_server_ensure (pid==sid shown in shared-ensure-session-leader.txt)
+$ herdr machine add localhost --label fm-lab-leader --remote-session fm-lab-leader-1619113-18880   (client state isolated via XDG_STATE_HOME)
+Saved SSH machine 2b23a390b28ae200959669317fb97003. Remote server is ready.
+Open Herdr clients connect automatically.
+exit=0
+$ herdr machine status
+2b23a390b28ae200959669317fb97003	fm-lab-leader	reachable
+exit=0
