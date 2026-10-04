@@ -3475,6 +3475,48 @@ SH
   pass "herdr presentation ordering: malformed socket metadata is warning-only and read-only"
 }
 
+# The binding names its parent by exact workspace id. A launcher's own workspace
+# may carry any label, and Herdr derives an unlabeled one's label from its active
+# pane's directory, so a parent labeled "fmh" or later relabeled still binds,
+# while a missing parent, an interleaved foreign space, or a wrong child
+# endpoint still refuses.
+test_projection_live_binding_matches_parent_by_exact_id() {
+  local token label out
+  token=AAAAAAAAAAAAAAAAAAAAAA
+  label="└ bind-r1 · p:$token"
+  out=$(ROOT="$ROOT" LABEL="$label" TOKEN="$token" bash -c '
+    . "$ROOT/bin/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      case "$2 $3" in
+        "workspace list") printf "%s\n" "$SPACES" ;;
+        "tab list") printf "%s\n" "{\"result\":{\"tabs\":[{\"tab_id\":\"w2:t2\",\"label\":\"fm-bind-r1\"}]}}" ;;
+        "pane list") printf "%s\n" "{\"result\":{\"panes\":[{\"pane_id\":\"w2:p2\",\"tab_id\":\"w2:t2\"}]}}" ;;
+        *) return 1 ;;
+      esac
+    }
+    run_case() {
+      name=$1 SPACES=$2 parent=$3 pane=$4
+      if fm_backend_herdr_projection_live_binding_matches fmtest "$TOKEN" w2 w2:t2 "$pane" \
+        "$parent" firstmate "$LABEL" fm-bind-r1; then
+        printf "%s:match\n" "$name"
+      else
+        printf "%s:refuse\n" "$name"
+      fi
+    }
+    child="{\"workspace_id\":\"w2\",\"label\":\"$LABEL\"}"
+    run_case derived-label "{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"fmh\"},$child]}}" w1 w2:p2
+    run_case relabeled "{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"other\"},$child]}}" w1 w2:p2
+    run_case home-label "{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"firstmate\"},$child]}}" w1 w2:p2
+    run_case parent-absent "{\"result\":{\"workspaces\":[{\"workspace_id\":\"w0\",\"label\":\"fmh\"},$child]}}" w1 w2:p2
+    run_case interleaved "{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"fmh\"},{\"workspace_id\":\"w3\",\"label\":\"captain\"},$child]}}" w1 w2:p2
+    run_case child-before-parent "{\"result\":{\"workspaces\":[$child,{\"workspace_id\":\"w1\",\"label\":\"fmh\"}]}}" w1 w2:p2
+    run_case wrong-pane "{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"fmh\"},$child]}}" w1 w2:p9
+  ')
+  [ "$out" = $'derived-label:match\nrelabeled:match\nhome-label:match\nparent-absent:refuse\ninterleaved:refuse\nchild-before-parent:refuse\nwrong-pane:refuse' ] \
+    || fail "live binding must bind the parent by exact id regardless of its label and still refuse a missing, detached, or wrong endpoint: $out"
+  pass "herdr presentation binding: a launcher parent with any label binds by exact id while detached or mismatched shapes refuse"
+}
+
 test_projection_reclaim_refusal_matrix_is_non_mutating() {
   local dir state home other_home home_real journal legacy token label out mutation_log
   dir="$TMP_ROOT/projection-reclaim-refusals"; state="$dir/state"; home="$dir/home"; other_home="$dir/other-home"
@@ -5923,6 +5965,7 @@ test_projection_order_missing_parent_is_read_only
 test_presentation_session_lock_path_is_shared_across_homes
 test_presentation_session_lock_path_rejects_malformed_socket
 test_projection_order_rejects_malformed_socket
+test_projection_live_binding_matches_parent_by_exact_id
 test_projection_reclaim_refusal_matrix_is_non_mutating
 test_projection_reclaim_replaces_only_exact_husk_and_advances_binding
 test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk

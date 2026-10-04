@@ -75,7 +75,29 @@ cleanup_all() {
   return "$status"
 }
 trap cleanup_all EXIT
-"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
+
+# An inert stand-in for the codex harness, so the control plane's relaunch can
+# prove a real replacement agent. Herdr panes inherit the server's PATH, so the
+# server is provisioned with it. The stand-in registers itself through the lab
+# helper and then becomes a long-running process named codex.
+FAKE_HARNESS_BIN="$TMP_ROOT/harnessbin"
+FAKE_AGENT_BIN="$TMP_ROOT/agentbin"
+mkdir -p "$FAKE_HARNESS_BIN" "$FAKE_AGENT_BIN"
+ln -s "$(command -v sleep)" "$FAKE_AGENT_BIN/codex"
+cat > "$FAKE_HARNESS_BIN/codex" <<HARNESS
+#!/usr/bin/env bash
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane report-agent "\$HERDR_PANE_ID" \\
+  --source fm-launcher-e2e --agent codex --state idle >/dev/null 2>&1
+exec "$FAKE_AGENT_BIN/codex" 900
+HARNESS
+chmod +x "$FAKE_HARNESS_BIN/codex"
+lab_provision() {
+  PATH="$FAKE_HARNESS_BIN:$PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || return 1
+  LAB_SOCKET=$("$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" session list --json 2>/dev/null \
+    | jq -r --arg s "$HERDR_LAB_SESSION" '.sessions[]? | select(.name == $s) | .socket_path' 2>/dev/null)
+  [ -n "$LAB_SOCKET" ]
+}
+lab_provision || fail "could not provision isolated Herdr lab session or read its socket path"
 
 lab() { "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"; }
 
@@ -151,10 +173,6 @@ record_worktree() {  # <meta>
   return 0
 }
 
-LAB_SOCKET=$(lab session list --json 2>/dev/null \
-  | jq -r --arg s "$HERDR_LAB_SESSION" '.sessions[]? | select(.name == $s) | .socket_path' 2>/dev/null)
-[ -n "$LAB_SOCKET" ] || fail "could not read the isolated lab session's socket path"
-
 # --- scratch world ----------------------------------------------------------
 
 # Presentation spaces are on by default, so every home that asserts the FLAT
@@ -198,7 +216,7 @@ Verify the worker is placed in the correct workspace.
 EOF
 }
 
-for id in uniqA uniqB dupC dupD staleF smE presU presD; do
+for id in uniqA uniqB dupC dupD staleF smE presU presD presR; do
   mkdir -p "$PRIMARY_HOME/data/$id" "$SM_HOME/data/$id" "$PRES_HOME/data/$id"
   write_ship_brief "$PRIMARY_HOME/data/$id/brief.md" "$id"
   write_ship_brief "$SM_HOME/data/$id/brief.md" "$id"
@@ -442,6 +460,146 @@ lab pane get "$LAUNCH_DUP_PANE" >/dev/null 2>&1 || fail "teardown closed the lau
 lab pane get "$UNIQB_PANE" >/dev/null 2>&1 || fail "teardown closed an unrelated worker's pane in the other same-labeled workspace"
 [ "$(label_of_workspace "$WS_PRIMARY_DUP")" = firstmate ] || fail "teardown removed or renamed the launcher's workspace"
 pass "real herdr E2E: teardown closes only the worker's own pane and leaves the launcher, its workspace, and the same-labeled sibling intact"
+
+# --- 9. a launcher workspace whose label is not the home label --------------
+# Herdr derives an unlabeled workspace's label from its active pane's working
+# directory, so a home at .../fmh shows a parent labeled "fmh" whose label
+# follows that shell around. The projection must still publish its exact
+# restart binding under that parent, a relaunch after the task's pane is gone
+# must put the task back in a nested workspace of its own rather than a flat tab
+# in the parent, a same-identity restart must reclaim that nested workspace in
+# place, and a binding that does not match must still fall back flat with its
+# warning.
+
+mkdir -p "$TMP_ROOT/fmh"
+FMH_OUT=$(lab workspace create --cwd "$TMP_ROOT/fmh" --no-focus 2>/dev/null) \
+  || fail "could not create the unlabeled launcher workspace"
+WS_FMH=$(printf '%s' "$FMH_OUT" | jq -r '.result.workspace.workspace_id // empty')
+FMH_LAUNCH_PANE=$(printf '%s' "$FMH_OUT" | jq -r '.result.root_pane.pane_id // empty')
+[ -n "$WS_FMH" ] && [ -n "$FMH_LAUNCH_PANE" ] || fail "the unlabeled launcher workspace returned no ids"
+[ "$(label_of_workspace "$WS_FMH")" = fmh ] \
+  || fail "Herdr did not derive the unlabeled launcher workspace's label from its directory: '$(label_of_workspace "$WS_FMH")'"
+read -r WS_AFTER_FMH _ _ <<EOF
+$(make_workspace captain-after)
+EOF
+[ -n "$WS_AFTER_FMH" ] || fail "could not create the captain workspace that follows the launcher's"
+FMH_TABS_BEFORE=$(tab_labels_of_workspace "$WS_FMH")
+
+# presR_env <command...>: run with exactly the identity Herdr injects into the
+# launcher pane's processes, plus the stand-in harness on PATH.
+presR_env() {
+  env HERDR_ENV=1 HERDR_PANE_ID="$FMH_LAUNCH_PANE" HERDR_SESSION="$HERDR_LAB_SESSION" \
+    HERDR_SOCKET_PATH="$LAB_SOCKET" PATH="$FAKE_HARNESS_BIN:$PATH" \
+    FM_SPAWN_NO_GUARD=1 FM_GATE_REFUSE_BYPASS=1 FM_HOME="$PRES_HOME" FM_ROOT_OVERRIDE="$ROOT" "$@"
+}
+presR_spawn() {  # <stdout> <stderr>
+  presR_env "$ROOT/bin/fm-spawn.sh" presR "$PROJ" codex --backend herdr --mode no-mistakes --yolo off \
+    >"$1" 2>"$2"
+}
+PRESR_META="$PRES_HOME/state/presR.meta"
+PRESR_JOURNAL="$PRES_HOME/state/presR.herdr-presentation"
+presR_pane() { grep '^herdr_pane_id=' "$PRESR_META" | cut -d= -f2-; }
+offset_after_fmh() {  # <workspace-id>
+  lab workspace list 2>/dev/null | jq -r --arg parent "$WS_FMH" --arg child "$1" '
+    [range(0; (.result.workspaces | length)) as $i
+      | {i: $i, id: .result.workspaces[$i].workspace_id}]
+    | ((map(select(.id == $child)) | .[0].i) - (map(select(.id == $parent)) | .[0].i))'
+}
+wait_agent_alive() {  # <pane>
+  local i=0
+  while [ "$i" -lt 100 ]; do
+    [ "$(FM_HOME="$PRES_HOME" HERDR_SESSION="$HERDR_LAB_SESSION" bash -c '
+      . "$1/bin/fm-backend.sh"; fm_backend_source herdr; fm_backend_agent_state herdr "$2:$3"
+    ' _ "$ROOT" "$HERDR_LAB_SESSION" "$1")" = alive ] && return 0
+    sleep 0.2
+    i=$((i + 1))
+  done
+  return 1
+}
+
+presR_spawn "$TMP_ROOT/presR.out" "$TMP_ROOT/presR.err" \
+  || fail "a projected spawn under an unlabeled launcher workspace failed"$'\n'"$(cat "$TMP_ROOT/presR.err")"
+record_worktree "$PRESR_META"
+if grep -F "could not publish an exact restart binding" "$TMP_ROOT/presR.err" >/dev/null 2>&1; then
+  fail "a projection under a launcher workspace labeled 'fmh' still could not publish its restart binding"
+fi
+PRESR_PANE=$(presR_pane)
+PRESR_WS=$(workspace_of_pane "$PRESR_PANE")
+[ "$(journal_field "$PRESR_JOURNAL" version)" = 2 ] \
+  || fail "a projection under a launcher labeled 'fmh' did not publish a version 2 binding"$'\n'"$(cat "$PRESR_JOURNAL" 2>/dev/null)"
+[ "$(journal_field "$PRESR_JOURNAL" parent_workspace_id)" = "$WS_FMH" ] \
+  && [ "$(journal_field "$PRESR_JOURNAL" workspace_id)" = "$PRESR_WS" ] \
+  || fail "the binding does not name the launcher's exact parent and the task's own workspace"
+[ "$PRESR_WS" != "$WS_FMH" ] || fail "the projected task was collapsed into its launcher's workspace"
+[ "$(offset_after_fmh "$PRESR_WS")" = 1 ] \
+  || fail "the projected task does not sit immediately after its launcher's workspace"
+wait_agent_alive "$PRESR_PANE" || fail "the stand-in harness never registered as a live agent"
+pass "real herdr E2E: a launcher workspace labeled 'fmh' gets a nested projection with an exact restart binding"
+
+# Killing the task's only pane also removes its one-task workspace.
+lab pane close "$PRESR_PANE" >/dev/null 2>&1 || fail "could not kill the projected task's pane"
+if lab pane get "$PRESR_PANE" >/dev/null 2>&1; then
+  fail "the projected task's pane survived its close"
+fi
+presR_env FM_CONTROL_POLL=0.2 "$ROOT/bin/fm-control.sh" presR relaunch \
+  --note 'The pane was killed; continue from the local copy.' \
+  >"$TMP_ROOT/presR-relaunch.out" 2>"$TMP_ROOT/presR-relaunch.err"
+RELAUNCH_RC=$?
+[ "$RELAUNCH_RC" -eq 0 ] \
+  || fail "fm-control relaunch of a task whose pane is gone failed"$'\n'"$(cat "$TMP_ROOT/presR-relaunch.out" "$TMP_ROOT/presR-relaunch.err")"
+RELAUNCH_PANE=$(presR_pane)
+RELAUNCH_WS=$(workspace_of_pane "$RELAUNCH_PANE")
+[ -n "$RELAUNCH_WS" ] && [ "$RELAUNCH_PANE" != "$PRESR_PANE" ] \
+  || fail "the relaunch did not record a fresh endpoint"
+[ "$RELAUNCH_WS" != "$WS_FMH" ] \
+  || fail "the relaunched task came back as a flat tab in its launcher's workspace"
+[ "$(tab_labels_of_workspace "$WS_FMH")" = "$FMH_TABS_BEFORE" ] \
+  || fail "the relaunch added a tab to the launcher's workspace"
+case "$(label_of_workspace "$RELAUNCH_WS")" in
+  "└ presR · p:"*) : ;;
+  *) fail "the relaunched task is not in a presentation projection of its own: '$(label_of_workspace "$RELAUNCH_WS")'" ;;
+esac
+[ "$(tab_labels_of_workspace "$RELAUNCH_WS")" = fm-presR ] \
+  || fail "the relaunched task's workspace does not hold exactly its own tab"
+[ "$(offset_after_fmh "$RELAUNCH_WS")" = 1 ] \
+  || fail "the relaunched task's workspace is not nested immediately after its launcher's"
+[ "$(journal_field "$PRESR_JOURNAL" version)" = 2 ] \
+  && [ "$(journal_field "$PRESR_JOURNAL" workspace_id)" = "$RELAUNCH_WS" ] \
+  && [ "$(journal_field "$PRESR_JOURNAL" pane_id)" = "$RELAUNCH_PANE" ] \
+  && [ "$(journal_field "$PRESR_JOURNAL" parent_workspace_id)" = "$WS_FMH" ] \
+  || fail "the relaunch did not publish an exact binding for its new projection"$'\n'"$(cat "$PRESR_JOURNAL" 2>/dev/null)"
+[ "$(focused_workspace)" = "$WS_OTHER" ] || fail "the relaunch stole focus from the captain's workspace"
+pass "real herdr E2E: fm-control relaunch of a task whose pane is gone puts it back in its own nested workspace, not the launcher's"
+
+# A same-identity restart reclaims that nested workspace in place.
+"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null || fail "could not stop the isolated session for restart"
+lab_provision || fail "could not reprovision the isolated session after restart"
+lab pane get "$RELAUNCH_PANE" >/dev/null 2>&1 || fail "the restart did not restore the projected pane structurally"
+presR_spawn "$TMP_ROOT/presR-reclaim.out" "$TMP_ROOT/presR-reclaim.err" \
+  || fail "a same-identity restart under the 'fmh' parent failed"$'\n'"$(cat "$TMP_ROOT/presR-reclaim.err")"
+RECLAIM_PANE=$(presR_pane)
+[ "$(workspace_of_pane "$RECLAIM_PANE")" = "$RELAUNCH_WS" ] && [ "$RECLAIM_PANE" != "$RELAUNCH_PANE" ] \
+  || fail "the same-identity restart did not reclaim the task's nested workspace in place"$'\n'"$(cat "$TMP_ROOT/presR-reclaim.err")"
+[ "$(tab_labels_of_workspace "$WS_FMH")" = "$FMH_TABS_BEFORE" ] \
+  || fail "the same-identity restart added a flat tab to the launcher's workspace"
+pass "real herdr E2E: a same-identity restart reclaims the nested workspace under a parent labeled 'fmh'"
+
+# A binding that names another home is not this task's binding: flat fallback.
+if ! { sed "s|^home=.*|home=$TMP_ROOT|" "$PRESR_JOURNAL" > "$PRESR_JOURNAL.tmp" &&
+  mv "$PRESR_JOURNAL.tmp" "$PRESR_JOURNAL"; }; then
+  fail "could not write the mismatched-binding fixture"
+fi
+"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null || fail "could not stop the isolated session for the mismatch case"
+lab_provision || fail "could not reprovision the isolated session for the mismatch case"
+presR_spawn "$TMP_ROOT/presR-mismatch.out" "$TMP_ROOT/presR-mismatch.err" \
+  || fail "a mismatched binding must fall back flat, not fail"$'\n'"$(cat "$TMP_ROOT/presR-mismatch.err")"
+grep -F "does not match its exact home, endpoint, or parent; spawning flat" "$TMP_ROOT/presR-mismatch.err" >/dev/null 2>&1 \
+  || fail "a mismatched binding did not warn before falling back flat"$'\n'"$(cat "$TMP_ROOT/presR-mismatch.err")"
+[ "$(workspace_of_pane "$(presR_pane)")" = "$WS_FMH" ] \
+  || fail "a mismatched binding did not fall back to a flat tab in the launcher's workspace"
+lab pane get "$RECLAIM_PANE" >/dev/null 2>&1 \
+  || fail "a mismatched binding mutated the old projected pane"
+pass "real herdr E2E: a binding for another home still falls back flat with its warning and leaves the projection untouched"
 
 if ! cleanup_all; then
   trap - EXIT
