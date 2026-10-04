@@ -69,6 +69,26 @@ hold FM_REMOTE_JOB_ACTIVE=1
 WORKER_HOLDER_PID=$HOLDER_PID
 hold SSH_CONNECTION='100.102.217.78 51234 100.100.1.2 22' SSH_CLIENT='100.102.217.78 51234 22'
 SSH_HOLDER_PID=$HOLDER_PID
+# The Voyager shape: the launch agent's job pid is the guard's perl wrapper,
+# and the server is its session-leading child whose environment the login
+# shell rebuilt without XPC_SERVICE_NAME.
+JOB_WRAPPER_FIFO="$TMP_ROOT/holder-job.fifo"
+JOB_WRAPPER_PIDFILE="$TMP_ROOT/holder-job.pid"
+mkfifo "$JOB_WRAPPER_FIFO"
+env -i SHELL=/bin/zsh "$PERL" -MPOSIX -e '
+  my ($pidfile, @cmd) = @ARGV;
+  my $child = fork() // die "fork: $!\n";
+  if (!$child) { POSIX::setsid() == $$ or die "setsid: $!\n"; exec @cmd or die "exec: $!\n"; }
+  open my $fh, ">", $pidfile or die; print $fh "$child\n"; close $fh;
+  waitpid $child, 0;' "$JOB_WRAPPER_PIDFILE" "$JQ" . "$JOB_WRAPPER_FIFO" &
+JOB_WRAPPER_PID=$!
+HOLDER_PIDS+=("$JOB_WRAPPER_PID")
+eval "exec ${HOLDER_FD}>\"\$JOB_WRAPPER_FIFO\""
+HOLDER_FD=$((HOLDER_FD + 1))
+i=0
+while [ ! -s "$JOB_WRAPPER_PIDFILE" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+JOB_CHILD_PID=$(cat "$JOB_WRAPPER_PIDFILE")
+HOLDER_PIDS+=("$JOB_CHILD_PID")
 
 # new_case <Darwin|Linux> [with-herdr] [gui] [login-shell]
 # Builds one isolated account fixture and points the module-level CASE_*
@@ -695,6 +715,37 @@ expect_code 1 "$DOCTOR_RC" "a session with no provable owner was reported ready"
 assert_contains "$DOCTOR_OUT" 'check herdr-server=fixable: session fm-remote is running but no herdr process can be shown to own its socket' \
   "an unprovable owner was not tagged fixable"
 pass "a session served outside the Aqua login session is fixable and --fix retakes it through launchd"
+
+# --- a server descended from the owned gui launchd job is Aqua-born ---------
+
+new_case Darwin with-herdr gui
+doctor --fix
+expect_code 0 "$DOCTOR_RC" "the launchd-descendant fixture could not be initialized"
+printf 'pid = %s\n' "$JOB_WRAPPER_PID" >> "$CASE_STATE/loaded-$LABEL"
+printf '%s\n' "$JOB_CHILD_PID" > "$CASE_STATE/socket-owner"
+: > "$CASE_LAUNCHCTL_LOG"
+doctor
+expect_code 0 "$DOCTOR_RC" "a server descended from the exclusive gui launchd job was reported unready"
+assert_contains "$DOCTOR_OUT" "check herdr-server=ok: session fm-remote is running in the Aqua login session (pid $JOB_CHILD_PID, launchd) and is a session leader" \
+  "a launchd-job descendant without XPC_SERVICE_NAME was not recognized as Aqua-born"
+assert_not_contains "$DOCTOR_OUT" "born outside the Aqua login session" "a launchd-job descendant was reported foreign"
+doctor --fix
+expect_code 0 "$DOCTOR_RC" "--fix did not accept a healthy launchd-job descendant"
+assert_not_contains "$(cat "$CASE_LAUNCHCTL_LOG")" kickstart "--fix restarted a healthy server descended from the launchd job"
+
+printf 'background job\n' > "$CASE_STATE/user-loaded-$LABEL"
+doctor
+expect_code 1 "$DOCTOR_RC" "a descendant of a job also loaded in the user domain was reported Aqua-born"
+assert_contains "$DOCTOR_OUT" "check herdr-server=fixable: session fm-remote is served by pid $JOB_CHILD_PID born outside the Aqua login session (unknown)" \
+  "a non-exclusive launchd job proved Aqua birth"
+rm -f "$CASE_STATE/user-loaded-$LABEL"
+
+sed -i.bak "s/^pid = .*/pid = $SSH_HOLDER_PID/" "$CASE_STATE/loaded-$LABEL"
+doctor
+expect_code 1 "$DOCTOR_RC" "a server outside the launchd job's process tree was reported Aqua-born"
+assert_contains "$DOCTOR_OUT" "check herdr-server=fixable: session fm-remote is served by pid $JOB_CHILD_PID born outside the Aqua login session (unknown)" \
+  "an unrelated launchd job pid proved Aqua birth"
+pass "a server descended from the exclusive owned gui launchd job is ready without XPC_SERVICE_NAME"
 
 # --- no GUI login session: every dependent gap stays human -------------------
 
