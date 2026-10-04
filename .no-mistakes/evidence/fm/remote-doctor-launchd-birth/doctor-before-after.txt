@@ -1,0 +1,18 @@
+# Process tree (launchd job pid = perl wrapper 2735836; herdr server stand-in = child 2735959, session leader, env without XPC_SERVICE_NAME)
+    PID    PPID     SID COMMAND
+2735836 2735211 2735211 /home/linuxbrew/.linuxbrew/bin/perl -MPOSIX -e my ($pf,@c)=@ARGV; my $k=fork; if(!$k){POSIX::setsid(); exec @c} open my $f,">",$pf; print $f "$k\n"; close $f; waitpid $k,0 /tmp/fm-ev.0uJqjD/state/child /home/linuxbrew/.linuxbrew/bin/jq . /tmp/fm-ev.0uJqjD/fifo
+2735959 2735836 2735959 /home/linuxbrew/.linuxbrew/bin/jq . /tmp/fm-ev.0uJqjD/fifo
+# server env:
+SHELL=/bin/zsh
+# fake launchctl print gui/1000/dev.firstmate.herdr.fm-remote:
+state = running
+pid = 2735836
+
+## BEFORE (base 71d6a20) bin/fm-remote-doctor.sh
+check herdr-server=fixable: session fm-remote is served by pid 2735959 born outside the Aqua login session (unknown), so its panes cannot reach the login keychain
+action: herdr-server: rerun this command with --fix so the launch agent takes the session over (its current panes close and the parent firstmate relaunches its mates)
+error: this host is not ready for a remote second mate; unresolved: remote-job-worker remote-job-worker-loaded launchagent launchagent-loaded herdr-server
+
+## AFTER (target d2c4b17) bin/fm-remote-doctor.sh
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 2735959, launchd) and is a session leader
+
