@@ -44,8 +44,9 @@
 #       ssh      SSH_CONNECTION, SSH_CLIENT, or SSH_TTY in the environment, or
 #                an ancestor that is sshd or herdr's remote-client-bridge
 #                (matched on argv[0] and whole arguments only)
-#       launchd  XPC_SERVICE_NAME=<label>, with launchctl proving that job is
-#                the owner in gui/<uid> or is loaded only in that domain
+#       launchd  the owned fm-remote launch agent's gui job is exclusive and
+#                its reported pid is in the server's ancestry, or
+#                XPC_SERVICE_NAME=<label> has launchctl owner proof
 #       worker   FM_REMOTE_JOB_ACTIVE=1, with launchctl proving that
 #                dev.firstmate.remote-job is loaded only in gui/<uid>
 #       unknown  none of the above; XPC_SERVICE_NAME alone, including value 0,
@@ -138,6 +139,15 @@ fm_remote_herdr_gui_job_is_exclusive() { # <uid> <label>
     && ! launchctl print "user/$uid/$label" >/dev/null 2>&1
 }
 
+fm_remote_herdr_gui_job_has_descendant() { # <uid> <label> <pid>
+  local uid=$1 label=$2 pid=$3 job ancestry
+  fm_remote_herdr_gui_job_is_exclusive "$uid" "$label" || return 1
+  job=$(launchctl print "gui/$uid/$label" 2>/dev/null | awk '$1 == "pid" && $2 == "=" { print $3; exit }') || return 1
+  case "$job" in ''|*[!0-9]*) return 1 ;; esac
+  ancestry=$(fm_remote_herdr_process_ancestry "$pid")
+  printf '%s\n' "$ancestry" | awk -v expected="$job" '$1 == expected { found = 1 } END { exit found ? 0 : 1 }'
+}
+
 fm_remote_herdr_owner_birth() { # <pid>
   local pid=$1 env uid xpc_line label
   env=$(fm_remote_herdr_process_env "$pid") || { printf 'unknown\n'; return 0; }
@@ -145,9 +155,18 @@ fm_remote_herdr_owner_birth() { # <pid>
     printf 'ssh\n'
     return 0
   fi
+  if fm_remote_herdr_process_ancestry "$pid" | fm_remote_herdr_ancestry_has_ssh_origin; then
+    printf 'ssh\n'
+    return 0
+  fi
   uid=$(id -u 2>/dev/null) || uid=
   xpc_line=$(printf '%s\n' "$env" | grep -E '^XPC_SERVICE_NAME=' | head -1 || true)
   label=${xpc_line#XPC_SERVICE_NAME=}
+  if [ -n "$uid" ] && fm_remote_herdr_gui_job_has_descendant "$uid" \
+    dev.firstmate.herdr.fm-remote "$pid"; then
+    printf 'launchd\n'
+    return 0
+  fi
   if [ -n "$uid" ] && [ -n "$xpc_line" ] \
     && fm_remote_herdr_gui_job_proves_owner "$uid" "$label" "$pid"; then
     printf 'launchd\n'
@@ -157,10 +176,6 @@ fm_remote_herdr_owner_birth() { # <pid>
     && [ -n "$uid" ] \
     && fm_remote_herdr_gui_job_is_exclusive "$uid" dev.firstmate.remote-job; then
     printf 'worker\n'
-    return 0
-  fi
-  if fm_remote_herdr_process_ancestry "$pid" | fm_remote_herdr_ancestry_has_ssh_origin; then
-    printf 'ssh\n'
     return 0
   fi
   printf 'unknown\n'

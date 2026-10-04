@@ -128,9 +128,10 @@ hold_under() {
   rm -f "$fifo" "$pidfile"
   mkfifo "$fifo"
   eval "exec ${HOLDER_FD}<>\"\$fifo\""
-  ( export FM_HOLDER_JQ="$JQ" FM_HOLDER_FIFO="$fifo" FM_HOLDER_PIDFILE="$pidfile"
-    exec -a "$argv0" bash -c 'env -i FM_HOLDER=1 "$FM_HOLDER_JQ" . "$FM_HOLDER_FIFO" & printf "%s\n" "$!" > "$FM_HOLDER_PIDFILE"; wait' "$@" ) &
-  HOLDER_PIDS+=("$!")
+  ( export FM_HOLDER_JQ="$JQ" FM_HOLDER_PERL="$PERL" FM_HOLDER_FIFO="$fifo" FM_HOLDER_PIDFILE="$pidfile"
+    exec -a "$argv0" bash -c 'if [ "${FM_HOLDER_LEADER:-0}" = 1 ]; then env -i FM_HOLDER=1 "$FM_HOLDER_PERL" -MPOSIX -e '\''POSIX::setsid() == $$ or die "setsid: $!\n"; exec @ARGV'\'' "$FM_HOLDER_JQ" . "$FM_HOLDER_FIFO" & else env -i FM_HOLDER=1 "$FM_HOLDER_JQ" . "$FM_HOLDER_FIFO" & fi; printf "%s\n" "$!" > "$FM_HOLDER_PIDFILE"; wait' "$@" ) &
+  HOLDER_PARENT_PID=$!
+  HOLDER_PIDS+=("$HOLDER_PARENT_PID")
   HOLDER_FD=$((HOLDER_FD + 1))
   local i=0
   while [ ! -s "$pidfile" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
@@ -256,6 +257,9 @@ hold_under herdr --session "$SESSION" remote-client-bridge
 BRIDGE_CHILD_PID=$HOLDER_PID
 hold_under 'sshd-session:' kunchen@notty
 SSHD_CHILD_PID=$HOLDER_PID
+FM_HOLDER_LEADER=1 hold_under herdr --session "$SESSION"
+JOB_DESCENDANT_PID=$HOLDER_PID
+JOB_DESCENDANT_PARENT_PID=$HOLDER_PARENT_PID
 sleep 0.3
 
 new_case running
@@ -278,6 +282,33 @@ assert_not_contains "$(herdr_calls)" 'server stop' "the guard stopped a gui-doma
 assert_contains "$GUARD_OUT" "pid $WORKER_PID born in the Aqua login session (worker)" \
   "the guard did not name the worker owner"
 pass "launchd and worker markers require gui-domain launchctl proof"
+
+new_case running
+printf '%s\n' "$JOB_DESCENDANT_PID" > "$CASE_OWNER"
+load_job gui dev.firstmate.herdr.fm-remote "$JOB_DESCENDANT_PARENT_PID"
+guard
+expect_code 0 "$GUARD_RC" "the guard did not trust a server descended from its exclusive gui launchd job"
+assert_not_started "the guard restarted a server descended from its gui launchd job"
+assert_contains "$GUARD_OUT" "pid $JOB_DESCENDANT_PID born in the Aqua login session (launchd)" \
+  "the guard did not recognize gui launchd ancestry after the login shell reset XPC_SERVICE_NAME"
+
+new_case running
+printf '%s\n' "$SSHD_CHILD_PID" > "$CASE_OWNER"
+load_job gui dev.firstmate.herdr.fm-remote "$SSHD_CHILD_PID"
+guard
+expect_code 0 "$GUARD_RC" "the guard did not prioritize SSH ancestry over a matching launchd job"
+assert_stop_before_start
+assert_contains "$GUARD_OUT" "pid $SSHD_CHILD_PID born outside the Aqua login session (ssh)" \
+  "a matching launchd job incorrectly overrode SSH ancestry"
+
+new_case running
+printf '%s\n' "$JOB_DESCENDANT_PID" > "$CASE_OWNER"
+guard
+expect_code 0 "$GUARD_RC" "the guard did not replace a descendant with no matching launchd job"
+assert_stop_before_start
+assert_contains "$GUARD_OUT" "pid $JOB_DESCENDANT_PID born outside the Aqua login session (unknown)" \
+  "a descendant without a matching launchd job was trusted as Aqua"
+pass "launchd ancestry proves login-shell descendants only for the exclusive owned job"
 
 # --- an Aqua-born owner that is not a session leader is replaced -------------
 
