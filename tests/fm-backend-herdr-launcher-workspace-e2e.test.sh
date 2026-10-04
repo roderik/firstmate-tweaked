@@ -541,6 +541,11 @@ lab pane close "$PRESR_PANE" >/dev/null 2>&1 || fail "could not kill the project
 if lab pane get "$PRESR_PANE" >/dev/null 2>&1; then
   fail "the projected task's pane survived its close"
 fi
+# On Herdr releases below the focus floor, that explicit last-pane close of a
+# non-focused workspace itself moves focus; re-anchor it so the check after the
+# relaunch measures the relaunch alone.
+lab tab focus "$WS_OTHER_TAB" >/dev/null 2>&1 || fail "could not re-focus the unrelated captain workspace"
+[ "$(focused_workspace)" = "$WS_OTHER" ] || fail "the unrelated captain workspace did not retake focus"
 presR_env FM_CONTROL_POLL=0.2 "$ROOT/bin/fm-control.sh" presR relaunch \
   --note 'The pane was killed; continue from the local copy.' \
   >"$TMP_ROOT/presR-relaunch.out" 2>"$TMP_ROOT/presR-relaunch.err"
