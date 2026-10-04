@@ -1,0 +1,5 @@
+ok - holder processes expose their environment to the owner library
+ok - an empty session is started inside the launch agent
+ok - a guard that already leads its process group or session still starts a session-leader server
+ok - launchd and worker markers require gui-domain launchctl proof
+not ok - the guard restarted a server descended from its gui launchd job

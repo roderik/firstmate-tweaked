@@ -1,0 +1,107 @@
+=== doctor transcript ===
+mode=check
+path=/tmp/fm-remote-doctor.aANtHD/case8/home/.local/bin:/tmp/fm-remote-doctor.aANtHD/case8/bin:/tmp/fm-remote-doctor.aANtHD/tools:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=no
+note: not launched through the fixed remote entrypoint; the reported PATH is this caller environment.
+platform=darwin
+required git=/tmp/fm-remote-doctor.aANtHD/tools/git
+required jq=/tmp/fm-remote-doctor.aANtHD/tools/jq
+required herdr=/tmp/fm-remote-doctor.aANtHD/case8/bin/herdr
+required tasks-axi=/tmp/fm-remote-doctor.aANtHD/case8/bin/tasks-axi
+required treehouse=/tmp/fm-remote-doctor.aANtHD/case8/bin/treehouse
+required harness=claude:/tmp/fm-remote-doctor.aANtHD/case8/bin/claude
+optional tmux=/usr/bin/tmux
+optional no-mistakes=absent
+optional gh=/usr/bin/gh
+check herdr=ok: /tmp/fm-remote-doctor.aANtHD/case8/bin/herdr
+check gui-session=ok: gui/1000
+check remote-job-worker=ok: /tmp/fm-remote-doctor.aANtHD/case8/home/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/1000
+check remote-job-probe=ok: the remote job worker published a fresh heartbeat
+check launchagent=ok: /tmp/fm-remote-doctor.aANtHD/case8/home/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/1000/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 725323, launchd) and is a session leader
+check entrypoint-link=skip: this run did not come through the fixed remote entrypoint
+ok: remote second-mate readiness confirmed on this host
+--- server process ancestry (launchctl job pid = 725278) ---
+    PID    PPID     SID COMMAND
+ 725278  724593  724569 /home/linuxbrew/.linuxbrew/bin/perl -MPOSIX -e    my ($pidfile, @cmd) = @ARGV;   my $child = fork() // die "fork: $!\n";   if (!$child) { POSIX::setsid() == $$ or die "setsid: $!\n"; exec @cmd or die "exec: $!\n"; }   open my $fh, ">", $pidfile or die; print $fh "$child\n"; close $fh;   waitpid $child, 0; /tmp/fm-remote-doctor.aANtHD/holder-job.pid /home/linuxbrew/.linuxbrew/bin/jq . /tmp/fm-remote-doctor.aANtHD/holder-job.fifo
+ 725323  725278  725323 /home/linuxbrew/.linuxbrew/bin/jq . /tmp/fm-remote-doctor.aANtHD/holder-job.fifo
+--- launchctl calls during doctor --fix ---
+print gui/1000
+print gui/1000/dev.firstmate.remote-job
+print gui/1000/dev.firstmate.herdr.fm-remote
+print gui/1000/dev.firstmate.herdr.fm-remote
+print gui/1000/dev.firstmate.herdr.fm-remote
+print user/1000/dev.firstmate.herdr.fm-remote
+print gui/1000/dev.firstmate.herdr.fm-remote
+print gui/1000
+print gui/1000/dev.firstmate.remote-job
+print gui/1000/dev.firstmate.herdr.fm-remote
+print gui/1000/dev.firstmate.herdr.fm-remote
+print gui/1000/dev.firstmate.herdr.fm-remote
+print user/1000/dev.firstmate.herdr.fm-remote
+print gui/1000/dev.firstmate.herdr.fm-remote
+print gui/1000
+print gui/1000/dev.firstmate.remote-job
+print gui/1000/dev.firstmate.herdr.fm-remote
+print gui/1000/dev.firstmate.herdr.fm-remote
+print gui/1000/dev.firstmate.herdr.fm-remote
+print user/1000/dev.firstmate.herdr.fm-remote
+print gui/1000/dev.firstmate.herdr.fm-remote
+(end)
+=== doctor transcript ===
+mode=check
+path=/tmp/fm-remote-doctor.aANtHD/case8/home/.local/bin:/tmp/fm-remote-doctor.aANtHD/case8/bin:/tmp/fm-remote-doctor.aANtHD/tools:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=no
+note: not launched through the fixed remote entrypoint; the reported PATH is this caller environment.
+platform=darwin
+required git=/tmp/fm-remote-doctor.aANtHD/tools/git
+required jq=/tmp/fm-remote-doctor.aANtHD/tools/jq
+required herdr=/tmp/fm-remote-doctor.aANtHD/case8/bin/herdr
+required tasks-axi=/tmp/fm-remote-doctor.aANtHD/case8/bin/tasks-axi
+required treehouse=/tmp/fm-remote-doctor.aANtHD/case8/bin/treehouse
+required harness=claude:/tmp/fm-remote-doctor.aANtHD/case8/bin/claude
+optional tmux=/usr/bin/tmux
+optional no-mistakes=absent
+optional gh=/usr/bin/gh
+check herdr=ok: /tmp/fm-remote-doctor.aANtHD/case8/bin/herdr
+check gui-session=ok: gui/1000
+check remote-job-worker=ok: /tmp/fm-remote-doctor.aANtHD/case8/home/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/1000
+check remote-job-probe=ok: the remote job worker published a fresh heartbeat
+check launchagent=ok: /tmp/fm-remote-doctor.aANtHD/case8/home/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/1000/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=fixable: session fm-remote is served by pid 725323 born outside the Aqua login session (unknown), so its panes cannot reach the login keychain
+check entrypoint-link=skip: this run did not come through the fixed remote entrypoint
+action: herdr-server: rerun this command with --fix so the launch agent takes the session over (its current panes close and the parent firstmate relaunches its mates)
+error: this host is not ready for a remote second mate; unresolved: herdr-server
+=== doctor transcript ===
+mode=check
+path=/tmp/fm-remote-doctor.aANtHD/case8/home/.local/bin:/tmp/fm-remote-doctor.aANtHD/case8/bin:/tmp/fm-remote-doctor.aANtHD/tools:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=no
+note: not launched through the fixed remote entrypoint; the reported PATH is this caller environment.
+platform=darwin
+required git=/tmp/fm-remote-doctor.aANtHD/tools/git
+required jq=/tmp/fm-remote-doctor.aANtHD/tools/jq
+required herdr=/tmp/fm-remote-doctor.aANtHD/case8/bin/herdr
+required tasks-axi=/tmp/fm-remote-doctor.aANtHD/case8/bin/tasks-axi
+required treehouse=/tmp/fm-remote-doctor.aANtHD/case8/bin/treehouse
+required harness=claude:/tmp/fm-remote-doctor.aANtHD/case8/bin/claude
+optional tmux=/usr/bin/tmux
+optional no-mistakes=absent
+optional gh=/usr/bin/gh
+check herdr=ok: /tmp/fm-remote-doctor.aANtHD/case8/bin/herdr
+check gui-session=ok: gui/1000
+check remote-job-worker=ok: /tmp/fm-remote-doctor.aANtHD/case8/home/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/1000
+check remote-job-probe=ok: the remote job worker published a fresh heartbeat
+check launchagent=ok: /tmp/fm-remote-doctor.aANtHD/case8/home/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/1000/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=fixable: session fm-remote is served by pid 725323 born outside the Aqua login session (unknown), so its panes cannot reach the login keychain
+check entrypoint-link=skip: this run did not come through the fixed remote entrypoint
+action: herdr-server: rerun this command with --fix so the launch agent takes the session over (its current panes close and the parent firstmate relaunches its mates)
+error: this host is not ready for a remote second mate; unresolved: herdr-server
