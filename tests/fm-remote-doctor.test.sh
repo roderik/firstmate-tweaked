@@ -75,6 +75,7 @@ SSH_HOLDER_PID=$HOLDER_PID
 JOB_WRAPPER_FIFO="$TMP_ROOT/holder-job.fifo"
 JOB_WRAPPER_PIDFILE="$TMP_ROOT/holder-job.pid"
 mkfifo "$JOB_WRAPPER_FIFO"
+# shellcheck disable=SC2016 # the quoted body is a Perl program, not shell
 env -i SHELL=/bin/zsh "$PERL" -MPOSIX -e '
   my ($pidfile, @cmd) = @ARGV;
   my $child = fork() // die "fork: $!\n";
