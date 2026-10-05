@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
 # exact pr_head=<sha> when available, then atomically arm a static merge poll.
-# A failed project ready check still records pr= and ownership but no pr_head=,
-# arms no poll, and exits non-zero; the fleet stall sweep wakes the owner to
-# re-run this once the pull request is green.
 # Refuses when bin/fm-dod-lib.sh will not accept the named head as reachable
 # outside the worker's disposable copy; in no-mistakes mode a forge-reported
 # head is that named head and is already stored on the forge.
@@ -135,27 +132,9 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
     PR_HEAD=$REMOTE_HEAD
   fi
 fi
-TASK_OWNER=$ID
-HEAD_REPO=unknown BASE_REPO=unknown BASE_REF=unknown BASE_SHA=unknown MERGE_TARGET=unknown STACKED=unknown
-# Ownership and base facts are recorded as unknown when the forge cannot supply
-# them, because an unreadable reading must not block arming.
-if [ "$PROVIDER" = github ] && command -v gh >/dev/null 2>&1 \
-  && IDENTITY=$(gh api "/repos/$PROJECT_PATH/pulls/$NUMBER" --jq '[.head.repo.full_name, .base.repo.full_name, .base.ref, .base.sha] | @tsv' 2>/dev/null) \
-  && IFS=$'\t' read -r ID_HEAD_REPO ID_BASE_REPO ID_BASE_REF ID_BASE_SHA <<< "$IDENTITY" \
-  && [ -n "$ID_HEAD_REPO" ] && [ -n "$ID_BASE_REPO" ] && [ -n "$ID_BASE_REF" ] \
-  && fm_pr_head_valid "$ID_BASE_SHA"; then
-  HEAD_REPO=$ID_HEAD_REPO BASE_REPO=$ID_BASE_REPO BASE_REF=$ID_BASE_REF BASE_SHA=$ID_BASE_SHA
-  MERGE_TARGET="$BASE_REPO:$BASE_REF"
-  if DEFAULT_REF=$(gh api "/repos/$BASE_REPO" --jq '.default_branch' 2>/dev/null) && [ -n "$DEFAULT_REF" ]; then
-    STACKED=no
-    [ "$BASE_REF" = "$DEFAULT_REF" ] || STACKED=yes
-  fi
-fi
 
 MODE=$(grep '^mode=' "$META" | tail -1 | cut -d= -f2- || true)
 PROJECT=$(grep '^project=' "$META" | tail -1 | cut -d= -f2- || true)
-PR_YOLO=$(grep '^yolo=' "$META" | tail -1 | cut -d= -f2- || true)
-case "$PR_YOLO" in on) MERGE_OWNER=firstmate ;; off) MERGE_OWNER=operator ;; *) MERGE_OWNER=unknown ;; esac
 # The gate is asked about the ready report this task's worker was told to give;
 # on a Gerrit change both publishing modes report the same published line.
 case "$PROVIDER:$MODE" in
@@ -163,8 +142,6 @@ case "$PROVIDER:$MODE" in
   *:no-mistakes|*:) DONE_LINE="done: PR $URL checks green" ;;
   *) DONE_LINE="done: PR $URL" ;;
 esac
-# The named-head gate still runs before metadata publication: a PR whose content
-# exists only in the disposable worker copy must not become a registered owner.
 if { [ -z "$PR_HEAD" ] || ! fm_dod_forge_head_is_named_head "$MODE"; } \
   && ! GATE_REASON=$(fm_dod_accept_ship_done "${KIND:-ship}" "$MODE" "$WT" "$PROJECT" "$DONE_LINE" "$STATE" "$ID" "$META"); then
   echo "error: $GATE_REASON" >&2
@@ -190,22 +167,6 @@ pr_check_cleanup() {
 }
 trap pr_check_cleanup EXIT
 trap 'exit 1' HUP INT TERM
-
-# Registration is published even when the project-owned ready check fails: a
-# pending CI result can fail it although the forge already reports a real
-# non-draft PR, and pr= with ownership lets the fleet stall sweep wake the lane.
-# A failed check records no pr_head (bin/fm-pr-merge.sh skips its own ready
-# check on a recorded pr_head) and arms no merge poll.
-READY_OK=1
-READY_REASON=
-if [ "${KIND:-ship}" = ship ] && [ "${FM_PR_CHECK_MERGE:-}" != 1 ] \
-  && ! READY_REASON=$(fm_dod_ready_check "$PROJECT" "$WT" "$PR_HEAD" "$NUMBER"); then
-  READY_OK=0
-fi
-
-# Build the private poll generation before publication. Preparation is temp-only,
-# so an interrupted or malformed generation leaves the task metadata untouched;
-# the generation is published only after registration and its ready gate pass.
 fm_pr_poll_prepare "$STATE" "$ID" "$PROVIDER" "$URL" "$HOST" "$PROJECT_PATH" "$NUMBER" "$SCRIPT_DIR/fm-pr-poll.sh" \
   || { echo "error: could not prepare PR poll" >&2; exit 1; }
 
@@ -217,27 +178,15 @@ META_LOCK_HELD=1
 META_DEVICE=$(fm_pr_file_device "$META") || exit 1
 STATE_DEVICE=$(fm_pr_file_device "$STATE") || exit 1
 [ "$META_DEVICE" = "$STATE_DEVICE" ] || { echo "error: task metadata is unavailable" >&2; exit 1; }
-# A recorded pr_head lets bin/fm-pr-merge.sh skip the ready check, so the
-# merge-time re-record keeps the previous one rather than record a head that
-# the merge's own ready check (FM_PR_READY_BOUND) did not cover.
-KEEP_PR_HEAD=0
-if [ "${FM_PR_CHECK_MERGE:-}" = 1 ] && [ -n "${FM_PR_READY_BOUND:-}" ] && [ "$PR_HEAD" != "$FM_PR_READY_BOUND" ]; then
-  KEEP_PR_HEAD=1
-  PR_HEAD=
-fi
 META_TMP=$(mktemp "$STATE/.fm-pr-meta.XXXXXX") || exit 1
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
-    pr=*) ;;
-    pr_head=*) [ "$KEEP_PR_HEAD" = 1 ] || continue; printf '%s\n' "$line" >> "$META_TMP" || exit 1 ;;
-    task_owner=*|head_repo=*|base_repo=*|base_ref=*|base_sha=*|merge_target=*|stacked=*|merge_owner=*) ;;
+    pr=*|pr_head=*) ;;
     *) printf '%s\n' "$line" >> "$META_TMP" || exit 1 ;;
   esac
 done < "$META"
-printf 'task_owner=%s\nhead_repo=%s\nbase_repo=%s\nbase_ref=%s\nbase_sha=%s\nmerge_target=%s\nstacked=%s\nmerge_owner=%s\n' \
-  "$TASK_OWNER" "$HEAD_REPO" "$BASE_REPO" "$BASE_REF" "$BASE_SHA" "$MERGE_TARGET" "$STACKED" "$MERGE_OWNER" >> "$META_TMP" || exit 1
 printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
-[ -z "$PR_HEAD" ] || [ "$READY_OK" != 1 ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
+[ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1
 fm_pr_private_file_valid "$META_TMP" 600 "$STATE_DEVICE" || exit 1
 fm_pr_metadata_identity_parse "$META_TMP" || exit 1
@@ -254,8 +203,6 @@ fm_pr_metadata_identity_parse "$META" || exit 1
   && [ "$FM_PR_META_NUMBER" = "$NUMBER" ] || exit 1
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
-
-[ "$READY_OK" = 1 ] || { echo "error: $READY_REASON" >&2; exit 1; }
 
 PR_POLL_PUBLISH_LOCK="$STATE/.pr-poll-publish-$ID.lock"
 fm_lock_acquire_wait "$PR_POLL_PUBLISH_LOCK"
@@ -294,22 +241,10 @@ PR_MODE=$(grep '^mode=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_YOLO=$(grep '^yolo=' "$META" | tail -1 | cut -d= -f2- || true)
 [ -z "$PR_MODE" ] || READY_LINE="$READY_LINE mode=$(fm_parent_channel_clean_note "$PR_MODE")"
 [ -z "$PR_YOLO" ] || READY_LINE="$READY_LINE yolo=$(fm_parent_channel_clean_note "$PR_YOLO")"
-READY_LINE="$READY_LINE task_owner=$TASK_OWNER head_repo=$HEAD_REPO base_repo=$BASE_REPO base_ref=$BASE_REF base_sha=$BASE_SHA merge_target=$MERGE_TARGET stacked=$STACKED merge_owner=$MERGE_OWNER"
 READY_RC=0
 fm_parent_channel_report "$FM_HOME" "$STATE" "$READY_LINE" || READY_RC=$?
 case "$READY_RC" in
   0|1) ;;
   *) printf 'actionable: PR %s is registered but its ready line did not reach the parent channel (rc=%s)\n' "$URL" "$READY_RC" >&2 ;;
 esac
-REVIEW_CLASS=$(grep '^review_class=' "$META" | tail -1 | cut -d= -f2- || true)
-REVIEW_FAMILY=$(grep '^review_family=' "$META" | tail -1 | cut -d= -f2- || true)
-if [ "${FM_PR_CHECK_MERGE:-}" != 1 ] && [ -n "$REVIEW_CLASS" ] && [ -n "$PR_HEAD" ]; then
-  REVIEW_ROUTE_RC=0
-  "$SCRIPT_DIR/fm-review-route.sh" request "$ID" "$URL" "$PR_HEAD" "$REVIEW_CLASS" "$REVIEW_FAMILY" || REVIEW_ROUTE_RC=$?
-  case "$REVIEW_ROUTE_RC" in
-    0|3) ;;
-    *) printf 'actionable: PR %s is registered but its independent review was not routed (rc=%s); retry bin/fm-review-route.sh request %s %s %s %s %s\n' "$URL" "$REVIEW_ROUTE_RC" "$ID" "$URL" "$PR_HEAD" "$REVIEW_CLASS" "$REVIEW_FAMILY" >&2 ;;
-  esac
-fi
-printf 'armed: state/%s.check.sh pr=%s task_owner=%s head_repo=%s base_repo=%s base_ref=%s base_sha=%s merge_target=%s stacked=%s merge_owner=%s\n' \
-  "$ID" "$URL" "$TASK_OWNER" "$HEAD_REPO" "$BASE_REPO" "$BASE_REF" "$BASE_SHA" "$MERGE_TARGET" "$STACKED" "$MERGE_OWNER"
+printf 'armed: state/%s.check.sh\n' "$ID"

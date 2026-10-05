@@ -61,9 +61,6 @@ if [ "${1:-}" = status ] && [ "${2:-}" = --json ] && [ "${FM_HERDR_SCRIPT_STATUS
   printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
   exit 0
 fi
-if [ "${1:-}" = server ] && [ "${2:-}" = --session ]; then
-  exit 0
-fi
 if [ "${1:-}" = terminal ] && [ "${2:-}" = title ] && [ "${3:-}" = clear ]; then
   reason=${FM_FAKE_HERDR_FOREGROUND_REASON:-no_foreground_client}
   printf '{"result":{"reason":"%s"}}\n' "$reason"
@@ -152,7 +149,6 @@ case "${1:-}" in
         printf '%s=%s\n' "$name" "$value"
       done
       printf 'args=%s\n' "$*"
-      if [ "$(ps -o sid= -p $$ | tr -d ' ')" = "$$" ]; then printf 'session_leader=yes\n'; else printf 'session_leader=no\n'; fi
     } > "$FM_HERDR_SERVER_ENV_LOG"
     : > "$FM_HERDR_SERVER_MARKER"
     ;;
@@ -1181,20 +1177,18 @@ test_container_ensure_starts_server_and_workspace() {
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
   # 2: server_ensure's status --json check -> not running
   printf '{"server":{"running":false}}\n' > "$resp/2.out"
-  # The backgrounded `herdr server` launch is logged but takes no numbered
-  # slot, since it races server_ensure's polls.
-  # 3: server_ensure poll -> now running
-  printf '{"server":{"running":true}}\n' > "$resp/3.out"
-  # 4: workspace list -> empty (no "firstmate" workspace yet)
-  printf '{"result":{"workspaces":[]}}\n' > "$resp/4.out"
-  # 5: workspace create -> w1, seeding default tab w1:t9 (real herdr returns
+  # 3: `herdr server` backgrounded launch - no meaningful output
+  # 4: server_ensure poll -> now running
+  printf '{"server":{"running":true}}\n' > "$resp/4.out"
+  # 5: workspace list -> empty (no "firstmate" workspace yet)
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/5.out"
+  # 6: workspace create -> w1, seeding default tab w1:t9 (real herdr returns
   # the seeded tab/pane ids in the SAME response - verified empirically).
-  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}\n' > "$resp/5.out"
+  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
   [ "$out" = $'fmtest:w1\tw1:t9' ] || fail "container_ensure should echo '<session>:<workspace_id>\\t<seeded_default_tab_id>', got '$out'"
-  for _ in $(seq 1 50); do grep -q $'\x1f''server' "$log" && break; sleep 0.1; done
   assert_contains "$(cat "$log")" "HERDR_SESSION=fmtest"$'\x1f''server' "container_ensure did not start the herdr server"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate' \
     "container_ensure did not create the firstmate workspace with the given cwd"
@@ -1220,18 +1214,6 @@ test_server_ensure_scrubs_home_and_harness_identity() {
   assert_contains "$output" "HERDR_SESSION=fmtest" "server_ensure lost explicit Herdr session routing"
   assert_contains "$output" "args=server --session fmtest" "server_ensure lost the trailing Herdr session flag"
   pass "fm_backend_herdr_server_ensure: scrubs home and harness identity without disturbing unrelated environment or session routing"
-}
-
-test_server_ensure_starts_session_leader() {
-  local dir log marker fb
-  dir="$TMP_ROOT/server-leader"; mkdir -p "$dir"; log="$dir/env"; marker="$dir/running"
-  fb=$(make_herdr_server_env_fakebin "$dir")
-  PATH="$fb:$PATH" FM_HERDR_SERVER_ENV_LOG="$log" FM_HERDR_SERVER_MARKER="$marker" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_server_ensure fm-remote' "$ROOT"
-  expect_code 0 $? "server_ensure should start the fm-remote server"
-  assert_contains "$(cat "$log")" "args=server --session fm-remote" "server_ensure did not start the fm-remote server"
-  assert_contains "$(cat "$log")" "session_leader=yes" "server_ensure started a herdr server that does not lead its own session, so saved machines refuse it"
-  pass "fm_backend_herdr_server_ensure: starts the herdr server as its own session leader"
 }
 
 test_container_ensure_reuses_existing_workspace() {
@@ -5843,7 +5825,6 @@ test_workspace_ensure_other_home_ignores_the_launcher_identity
 test_container_ensure_refuses_an_ambiguous_home_label
 test_container_ensure_starts_server_and_workspace
 test_server_ensure_scrubs_home_and_harness_identity
-test_server_ensure_starts_session_leader
 test_container_ensure_reuses_existing_workspace
 test_container_ensure_creates_with_no_focus_flag
 test_container_ensure_uses_secondmate_home_label

@@ -7,9 +7,9 @@
 # ESCALATES a batched, distilled digest to the supervisor pane on
 # captain-relevant events plus bounded declared-wait rechecks. This is the
 # token-efficient replacement for the prior always-inject daemon: routine
-# signal/stale/heartbeat wakes cost zero firstmate context; only done/
-# needs-decision/blocked/failed/persistent-wedge/check-output events and a
-# declared-wait recheck reach the LLM, and even then as one pre-read digest per
+# signal/stale/heartbeat wakes cost zero firstmate context; routing is owned by
+# .agents/skills/afk/SKILL.md (Classification policy).
+# Escalated events reach the LLM as one pre-read digest per
 # batch window. That digest is byte-bounded (see escalate_flush); when it cuts
 # or omits anything it names a state/.subsuper-digests/ file holding every
 # buffered event verbatim.
@@ -48,7 +48,7 @@
 #     drain and acknowledges it only after routing completes.
 #   - Fail-safe-to-escalate: any wake the classifier cannot confidently mark
 #     routine is escalated.
-#   - Bounded wedge latency: a stale pane without a declared wait is escalated
+#   - Bounded wedge latency: ordinary pane staleness without a declared wait escalates
 #     only after it has been idle for STALE_ESCALATE_SECS
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
 #     within STALE_ESCALATE_SECS + a tick, never lost. A declared wait - either a
@@ -443,11 +443,6 @@ classify_stale() {  # <window> <state> [<span-record> <span-status>]
     return
   fi
   declared=$(status_declared_wait_line "$state/$task.status")
-  if [ -n "$declared" ] && status_is_paused "$declared" \
-    && stale_window_dormant_wait "$win" "$state"; then
-    printf 'self|transient stale (%s): idle at its prompt under a declared wait it cannot resume from by itself: %s' "$win" "$declared"
-    return
-  fi
   if [ -n "$declared" ] && status_is_paused_or_captain_held "$declared"; then
     # A DECLARED external-wait pause or a verified captain-held transfer
     # (fm-classify-lib.sh owns which declarations qualify): an idle pane is
@@ -584,10 +579,7 @@ reconcile_pause_tracking() {  # <window> <state> <last-status-line>
   key=$(_stale_key "$task")
   marker="$state/.subsuper-paused-$key"
   watcher_key=$(_stale_key "$win")
-  if status_is_paused "$last" && stale_window_dormant_wait "$win" "$state"; then
-    rm -f "$marker" "$state/.subsuper-pause-until-due-$key" \
-      "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key"
-  elif status_is_paused_or_captain_held "$last"; then
+  if status_is_paused_or_captain_held "$last"; then
     stale_marker_remove "$win" "$state"
     pause_marker_record "$win" "$state"
   elif [ -e "$marker" ] || [ -e "$state/.paused-$watcher_key" ]; then
@@ -749,25 +741,6 @@ stale_window_is_busy() {  # <window> <state>
   tail40=$(fm_backend_capture "$backend" "$win" 40 "$label" 2>/dev/null) || return 2
   verdict=$(fm_busy_classify "$backend" "$win" "$harness" "$task" "$state" "$tail40")
   [ "${verdict%% *}" = busy ]
-}
-
-# stale_window_dormant_wait: 0 when the task's latest declared wait is a
-# `paused:` external wait but its harness is dormant when idle and the task
-# classifies exactly idle now (fm_busy_dormant_idle). That worker will not
-# notice its own wait clearing, so the declaration is not a wait here either:
-# classify_stale and the persistence recheck age it like an undeclared quiet
-# pane instead of granting the long pause cadence. Gated on the cheap
-# harness and status reads before any pane capture.
-stale_window_dormant_wait() {  # <window> <state>
-  local win=$1 state=$2 backend harness task tail40 verdict
-  harness=$(task_window_harness "$win" "$state")
-  fm_busy_idle_is_dormant "$harness" || return 1
-  task=$(window_to_task "$win" "$state")
-  status_is_paused "$(status_declared_wait_line "$state/$task.status")" || return 1
-  backend=$(task_window_backend "$win" "$state")
-  tail40=$(fm_backend_capture "$backend" "$win" 40 "fm-$task" 2>/dev/null) || return 1
-  verdict=$(fm_busy_classify "$backend" "$win" "$harness" "$task" "$state" "$tail40")
-  fm_busy_dormant_idle "$harness" "$verdict"
 }
 
 escalate_add() {  # <state> <distilled-item>
@@ -1215,7 +1188,7 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, run the catch-all status scan in
 #     the block below and escalate what it finds; that block owns its file set.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs marker_epoch until bounded_until pause_reason dormant
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs marker_epoch until bounded_until pause_reason
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1262,21 +1235,12 @@ housekeeping() {  # <state>
     fi
     task=$(window_to_task "$win" "$state")
     last=$(status_declared_wait_line "$state/$task.status")
-    dormant=1
-    if [ -n "$last" ] && status_is_paused "$last" && stale_window_dormant_wait "$win" "$state"; then
-      dormant=0
-    elif [ -n "$last" ] && status_is_paused_or_captain_held "$last"; then
+    if [ -n "$last" ] && status_is_paused_or_captain_held "$last"; then
       reconcile_pause_tracking "$win" "$state" "$last"
       continue
     fi
     age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
     [ "$age" -ge "${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}" ] || continue
-    if [ "$dormant" -eq 0 ]; then
-      if escalate_add "$state" "stale persisted ${age}s (idle at its prompt under a declared wait it cannot resume from by itself): $win"; then
-        stale_marker_remove "$win" "$state"
-      fi
-      continue
-    fi
     stale_window_is_busy "$win" "$state"
     case "$?" in
       0) rm -f "$marker" ;;
@@ -1598,6 +1562,8 @@ handle_wake() {  # <reason> <state>
                 *) arg="${reason#signal: }" ;;
               esac
               decision=$(FM_STATUS_SPAN_ENDPOINT_FILE="$capture" classify_signal "$arg" "$state") ;;
+    stale:*" (unread firstmate instruction: stuck-busy "*|stale:*" (steering-inbox busy bookkeeping unwritable: "*)
+              decision="escalate|${reason#stale: }" ;;
     stale:*)  kind=stale; arg="${reason#stale: }"; stale_detail="${arg#"$arg"}"
               case "$arg" in *" ("*) stale_detail="${arg#*" ("}"; arg="${arg%% \(*}" ;; esac
               task=$(window_to_task "$arg" "$state")

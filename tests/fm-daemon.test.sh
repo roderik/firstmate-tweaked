@@ -358,6 +358,90 @@ EOF
   pass "failed escalation writes retain durable wakes and classification positions"
 }
 
+test_busy_inbox_escalation_reaches_supervision() {
+  local variant=$1 mode=$2 dir state task=busy-inbox win gen pane reason detail buffer sent drain
+  dir=$(make_supercase "busy-inbox-$variant-$mode"); state="$dir/state"
+  win="sess:fm-$task"; pane="$dir/pane.txt"; sent="$dir/sent.log"
+  buffer="$state/.subsuper-escalations"; drain="$dir/daemon-bin"
+  printf '%s\n' "$mode" > "$state/.afk"
+  printf 'working: processing instructions\n' > "$state/$task.status"
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux" "harness=claude"
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$task")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$task" busy --gen "$gen" \
+    --source claude-hook --event UserPromptSubmit
+  printf 'Question awaiting an answer\n' > "$pane"
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$pane" \
+    stale_window_is_busy "$win" "$state" || fail "inbox consumer fixture is not busy"
+  case "$variant" in
+    stuck)
+      detail="unread firstmate instruction: stuck-busy after 2 consecutive busy-deferred due doorbells; $state/$task.inbox/001.msg stays unhandled and no doorbell was typed; inspect the worker"
+      ;;
+    write)
+      detail="steering-inbox busy bookkeeping unwritable: $state/$task.inbox/.busy-state cannot be written while $state/$task.inbox/001.msg stays unhandled; inspect the inbox directory"
+      ;;
+    reset)
+      detail="steering-inbox busy bookkeeping unwritable: $state/$task.inbox/.busy-state cannot be reset after a non-busy check; inspect the inbox directory"
+      ;;
+  esac
+  reason="stale: $win ($detail)"
+  mkdir "$drain"
+  cat > "$drain/fm-wake-drain.sh" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
+if [ "\${FM_TEST_WAKE_FALLBACK:-0}" != 1 ]; then
+  printf '1\t1\tstale\t$win\t%s\n' "$reason"
+fi
+printf 'WAKE_ACK_REQUIRED: inbox --ack-through 1 --recovery-generation gen\n' >&2
+EOF
+  chmod +x "$drain/fm-wake-drain.sh"
+  FM_DAEMON_DIR="$drain" FM_ESCALATE_BATCH_SECS=999999 handle_durable_wakes "$reason" "$state" \
+    || fail "$variant $mode inbox wake was not handled"
+  [ "$(cat "$buffer" 2>/dev/null)" = "${reason#stale: }" ] \
+    || fail "$variant $mode inbox escalation was absorbed before supervision"
+  [ "$(cat "$dir/acked")" = ack ] || fail "buffered inbox wake was not acknowledged once"
+  [ "$(status_seen_offset "$state" "$task")" = 0 ] || fail "inbox escalation consumed worker status"
+  [ ! -e "$state/.subsuper-stale-$task" ] || fail "inbox escalation entered transient stale recovery"
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=0 FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+  [ "$(cat "$buffer")" = "${reason#stale: }" ] || fail "busy housekeeping lost the inbox escalation"
+  printf '❯ \n' > "$pane"
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_SENT="$sent" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=sess:supervisor escalate_flush "$state" \
+    || fail "$variant $mode inbox escalation did not reach the supervisor"
+  assert_contains "$(delivered_digest "$sent")" "${reason#stale: }" "supervisor digest lost the inbox reason"
+  [ ! -s "$buffer" ] || fail "delivered inbox escalation stayed buffered"
+
+  rm "$buffer" "$dir/acked"
+  mkdir "$buffer"
+  ! FM_DAEMON_DIR="$drain" FM_ESCALATE_BATCH_SECS=999999 handle_durable_wakes "$reason" "$state" 2>/dev/null \
+    || fail "unwritable inbox escalation buffer acknowledged its wake"
+  [ ! -e "$dir/acked" ] || fail "failed inbox buffering acknowledged the wake"
+  rmdir "$buffer"
+  FM_DAEMON_DIR="$drain" FM_ESCALATE_BATCH_SECS=999999 FM_TEST_WAKE_FALLBACK=1 \
+    handle_durable_wakes "$reason" "$state" || fail "inbox fallback reason did not recover"
+  [ "$(cat "$buffer")" = "${reason#stale: }" ] || fail "fallback lost the inbox escalation"
+  [ "$(cat "$dir/acked")" = ack ] || fail "recovered inbox buffering did not acknowledge the wake"
+  pass "$variant inbox escalation reaches supervision in $mode mode and survives buffering failure"
+}
+
+test_busy_inbox_dispatch_preserves_other_stale_reasons() {
+  local dir state detail
+  dir=$(make_supercase inbox-dispatch-scope); state="$dir/state"
+  printf 'working: processing instructions\n' > "$state/ordinary.status"
+  for detail in \
+    '' \
+    'busy for 4000s without a turn boundary' \
+    "unread firstmate instruction: $state/ordinary.inbox/001.msg still unhandled after 3 doorbell delivery attempts with an idle pane; inspect the worker" \
+    'steering-inbox ladder bookkeeping unwritable: .ring-state cannot be written' \
+    'steering-inbox retry mark unremovable: .retry-ring cannot be removed'; do
+    FM_ESCALATE_BATCH_SECS=999999 handle_wake "stale: sess:fm-ordinary${detail:+ ($detail)}" "$state" \
+      || fail "ordinary stale handling failed"
+    [ ! -s "$state/.subsuper-escalations" ] || fail "inbox dispatch changed another stale reason: $detail"
+    [ -e "$state/.subsuper-stale-ordinary" ] || fail "inbox dispatch bypassed ordinary stale recovery"
+  done
+  pass "inbox dispatch preserves ordinary stale, busy-turn, and other doorbell routing"
+}
+
 test_catchall_buffer_failure_preserves_position() {
   local dir state buffer out
   dir=$(make_supercase catchall-write-failure); state="$dir/state"
@@ -917,70 +1001,6 @@ test_stale_paused_classifies_pause() {
   out=$(FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-held-w9" "$state")
   case "$out" in pause\|*) ;; *) fail "declared pause did not classify as pause: $out" ;; esac
   pass "paused reasons with captain phrases remain pause-classified"
-}
-
-# A worker whose runtime is dormant when idle (Codex) cannot end its own
-# declared wait, so under away mode an idle Codex pane under `paused:` is aged
-# like an undeclared quiet pane instead of earning the pause cadence. The same
-# declaration over an open turn keeps the pause action, and so does any other
-# harness. The verdict comes from the real classifier over a rollout fixture.
-test_stale_dormant_codex_pause_ages_as_stale() {
-  local dir state out now stamp sdir f saved_capture
-  dir=$(make_supercase stale-dormant-codex)
-  state="$dir/state"
-  now=$(date +%s)
-  printf 'window=sess:fm-cxd\nkind=ship\nharness=codex\nbackend=tmux\nworktree=%s/wt\nspawn_gen=s%s.1.1\n' \
-    "$dir" "$((now - 600))" > "$state/cxd.meta"
-  stamp=$(fm_busy_codex_stamp "$((now - 590))")
-  sdir="$dir/codex-home/sessions/${stamp:0:4}/${stamp:5:2}/${stamp:8:2}"
-  mkdir -p "$sdir"
-  f="$sdir/rollout-$stamp-01a0-daemon.jsonl"
-  printf '{"type":"session_meta","payload":{"cwd":"%s/wt","originator":"codex-tui","source":"cli","thread_source":"user"}}\n' "$dir" > "$f"
-  printf '{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}\n' >> "$f"
-  printf 'paused: waiting on taskguard ci:local; resume when it finishes\n' > "$state/cxd.status"
-  saved_capture=$(declare -f fm_backend_capture)
-  # shellcheck disable=SC2329 # invoked indirectly through stale_window_dormant_wait
-  fm_backend_capture() { printf '› Ask Codex to do anything\n'; }
-  out=$(CODEX_HOME="$dir/codex-home" FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-cxd" "$state")
-  case "$out" in pause\|*) ;; *) fail "a busy codex pane under a declared wait lost its pause: $out" ;; esac
-  printf '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}\n' >> "$f"
-  out=$(CODEX_HOME="$dir/codex-home" FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-cxd" "$state")
-  case "$out" in self\|*"cannot resume from by itself"*) ;; *) fail "an idle codex pane under a declared wait kept the pause cadence: $out" ;; esac
-  sed -i.bak 's/^harness=codex$/harness=grok/' "$state/cxd.meta"
-  out=$(CODEX_HOME="$dir/codex-home" FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-cxd" "$state")
-  case "$out" in pause\|*) ;; *) fail "a non-dormant harness lost its declared pause: $out" ;; esac
-  eval "$saved_capture"
-  pass "an idle codex pane under a declared wait ages as stale in away mode; busy or non-dormant panes keep the pause"
-}
-
-test_housekeeping_dormant_codex_pause_escalates_stale() {
-  local dir state now stamp sdir f saved_capture key
-  dir=$(make_supercase housekeeping-dormant-codex)
-  state="$dir/state"
-  now=$(date +%s)
-  printf 'window=sess:fm-cxh\nkind=ship\nharness=codex\nbackend=tmux\nworktree=%s/wt\nspawn_gen=s%s.1.1\n' \
-    "$dir" "$((now - 900))" > "$state/cxh.meta"
-  stamp=$(fm_busy_codex_stamp "$((now - 890))")
-  sdir="$dir/codex-home/sessions/${stamp:0:4}/${stamp:5:2}/${stamp:8:2}"
-  mkdir -p "$sdir"
-  f="$sdir/rollout-$stamp-01a0-housekeeping.jsonl"
-  printf '{"type":"session_meta","payload":{"cwd":"%s/wt","originator":"codex-tui","source":"cli","thread_source":"user"}}\n' "$dir" > "$f"
-  printf '{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}\n' >> "$f"
-  printf '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}\n' >> "$f"
-  printf 'paused: waiting on taskguard ci:local; resume when it finishes\n' > "$state/cxh.status"
-  key=$(_stale_key cxh)
-  echo $((now - 500)) > "$state/.subsuper-stale-$key"
-  echo $((now - 500)) > "$state/.subsuper-paused-$key"
-  saved_capture=$(declare -f fm_backend_capture)
-  # shellcheck disable=SC2329 # invoked indirectly through stale_window_dormant_wait
-  fm_backend_capture() { printf '› Ask Codex to do anything\n'; }
-  CODEX_HOME="$dir/codex-home" FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 \
-    FM_ESCALATE_BATCH_SECS=3600 FM_MAX_DEFER_SECS=0 housekeeping "$state"
-  eval "$saved_capture"
-  [ ! -e "$state/.subsuper-paused-$key" ] || fail "a dormant idle codex pause kept its long-cadence pause marker"
-  grep -q "stale persisted .*cannot resume from by itself.*sess:fm-cxh" "$state/.subsuper-escalations" 2>/dev/null \
-    || fail "a dormant idle codex pause was not escalated on the stale cadence"
-  pass "housekeeping ages a dormant idle codex pause as stale and escalates it"
 }
 
 # A resolved line for another phase key, including the stated default key that
@@ -3223,8 +3243,6 @@ test_enriched_wedge_under_declared_wait_uses_pause_cadence
 test_stale_terminal_escalates
 test_stale_actionable_wait_escalates_and_keeps_pause_cadence
 test_stale_paused_classifies_pause
-test_stale_dormant_codex_pause_ages_as_stale
-test_housekeeping_dormant_codex_pause_escalates_stale
 test_stale_pause_survives_a_foreign_resolved_line
 test_stale_captain_held_classifies_pause
 test_handle_wake_paused_records_pause_marker
@@ -3287,6 +3305,13 @@ test_unverifiable_identity_surfaces_without_marker
 test_status_read_failure_surfaces_without_advancing_seen
 test_catchall_advances_routine_then_surfaces_append
 test_escalation_buffer_failure_retains_wake_and_position
+test_busy_inbox_escalation_reaches_supervision stuck away
+test_busy_inbox_escalation_reaches_supervision stuck quiet
+test_busy_inbox_escalation_reaches_supervision write away
+test_busy_inbox_escalation_reaches_supervision write quiet
+test_busy_inbox_escalation_reaches_supervision reset away
+test_busy_inbox_escalation_reaches_supervision reset quiet
+test_busy_inbox_dispatch_preserves_other_stale_reasons
 test_catchall_buffer_failure_preserves_position
 test_durable_wake_failure_retains_entire_batch
 test_missing_status_stale_is_acknowledged_without_diagnostic

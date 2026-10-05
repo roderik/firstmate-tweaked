@@ -1000,7 +1000,7 @@ Per-machine Cursor `cli-config.json` attribution-off is not this contract: it do
 
 `config/crew-dispatch.json` is an optional local, gitignored file containing natural-language rules that firstmate reads before dispatching a crewmate or scout.
 Firstmate chooses the best matching rule with judgment; shell scripts do not match the natural-language rules.
-Firstmate resolves the rule's profile object or array under `AGENTS.md` section 4 and, when the current captain preference leaves quota consideration enabled, `quota-array-dispatch`, then passes only concrete `--harness`, `--model`, and `--effort` flags to `fm-spawn.sh`.
+Firstmate resolves the rule's profile object or array under `AGENTS.md` section 4 and `quota-array-dispatch`, then passes only concrete `--harness`, `--model`, and `--effort` flags to `fm-spawn.sh`.
 
 **Spawn requirements**
 
@@ -1086,8 +1086,7 @@ This single-provider table is separate from the frozen legacy mapping used by `f
 - Codex `max` is valid when the profile selects `gpt-5.6-luna`, whose installed catalog entry supports that reasoning level.
 - An omitted model or effort means the selected harness uses its own default for that axis.
 - OpenCode receives the effort as its default `build` agent's `variant`, keyed to the resolved model, inside the `OPENCODE_CONFIG_CONTENT` JSON its launch already writes (the per-model reasoning-effort field of the config schema, verified on opencode 1.18.32); with no model resolved, the effort is recorded in task metadata but omitted from the launch.
-- When quota consideration is enabled, every profile array is an implicit quota-aware choice resolved through `quota-array-dispatch`.
-- When the current captain preference disables quota consideration, firstmate uses each profile array in its listed order and does not read or report quota fields.
+- Every profile array is an implicit quota-aware choice resolved through `quota-array-dispatch`.
 - If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
 - Except for `ultra`, which refuses unsupported profiles under the native-effort contract above, an effort value the chosen harness does not accept is recorded as `effort=` in task meta for traceability but omitted from the launch flags.
 - Bootstrap reports unsupported harness/model/effort combinations as a `CREW_DISPATCH` diagnostic when they are visible in the file.
@@ -1113,7 +1112,6 @@ Secondmate homes inherit this file from the primary, so a secondmate's own crewm
 It is off unless `TYPESAFE_API_KEY` is non-empty in the calling environment or the home's gitignored `.env` holds a `TYPESAFE_API_KEY=` line; the environment wins, matching the Relay and mail-plane contracts, and the Relay accessor in `bin/fm-env-lib.sh` reads the line.
 
 Off means one `dispatch-resolve: off` line on stderr, nothing on stdout, exit 0, and no network call, so firstmate dispatches exactly as it does without the tool.
-When the current captain preference disables quota consideration, firstmate either keeps the resolver off or invokes it with `FM_QUOTA_ROUTING=off`; that mode preserves listed profile order, skips `quota-axi`, and emits no quota evidence.
 This section is the single owner of the tool's operator contract; the script header owns its exact flags and output lines, and "Crew dispatch profiles" above owns the declared rule and profile fields it applies.
 
 Rules come only from the effective home's `config/crew-dispatch.json`; `FM_CONFIG_OVERRIDE` selects the config directory for tests and specialized setup like the other scripts.
@@ -1163,9 +1161,10 @@ An absent rules file, a default-only file, or `rules: []` returns the non-clear 
 
 After the answer, code applies all remaining checks and ranking:
 
-- The confidence floor, the runner-up fallback, and the matched rule's `approval`; these apply whether or not quota consideration is enabled.
-- When quota consideration is enabled, the matched rule's `floor`, each candidate's `provider` and `floor`, every applicable account-wide and model/product row from one `quota-axi --json` snapshot, and the numeric `spendPriority` argmax over candidates, using each candidate's limiting row.
-- With `FM_QUOTA_ROUTING=off`, those quota-dependent checks are skipped and the first configured eligible profile is chosen.
+- The confidence floor and the matched rule's `approval` and `floor`.
+- Each candidate's `provider` and `floor`.
+- Every applicable account-wide and model/product row from one `quota-axi --json` snapshot.
+- The numeric `spendPriority` argmax over candidates, using each candidate's limiting row.
 
 The [shared quota library](../bin/fm-quota-axi-lib.sh) accepts schema 5 and schema 6 and implements the [account-matching contract](../.agents/skills/quota-array-dispatch/SKILL.md#1-eligibility).
 
@@ -1216,7 +1215,7 @@ Firstmate passes its profile line unless it states a reason to override, such as
 
 - The resolver and bootstrap copy an environment-provided key into a non-exported private variable and unset `TYPESAFE_API_KEY` before launching child processes, so the secret is absent from child environments.
 - The resolver sends the key to `curl` only as a header read from a file descriptor, never on argv, and nothing prints, logs, or writes it.
-- The resolver fixes the endpoint at `https://api.typesafe.ai`, model at `jev-latest`, default confidence floor at 0.6, and request timeout at 5 seconds; `TYPESAFE_API_KEY` enables it and `FM_QUOTA_ROUTING=off` disables quota reads and evidence while preserving configured profile order.
+- The resolver fixes the endpoint at `https://api.typesafe.ai`, model at `jev-latest`, default confidence floor at 0.6, and request timeout at 5 seconds; `TYPESAFE_API_KEY` is its only resolver-specific environment setting.
 
 The live rule-match evidence is recorded in [`verification/dispatch-resolve.md`](verification/dispatch-resolve.md).
 
@@ -2248,38 +2247,6 @@ The two read files use different parsing rules:
 
 `FM_VOICE_RELAY` and `FM_VOICE_PYTHON` belong to the laptop rather than to a home, so they have no config file: `bin/fm-voice-client.py` requires the relay path as a flag or that variable and carries no default path.
 
-## Fleet pull-request and rollout watches
-
-The fleet watches are optional registered custom checks that keep a team's pull requests moving and surface failed rollout workflows.
-They read one private JSON file at `$FM_HOME/config/fleet-watch.json`, or the path in `FM_FLEET_CONFIG_FILE`.
-Copy [`docs/examples/fleet-watch.json`](examples/fleet-watch.json) and replace its example values before arming a check.
-
-The configuration contains `repo`, an `authors` allowlist, `required_test_checks`, `cadence_seconds`, and `thresholds` for `budget_seconds`, `renudge_seconds`, and `escalate_seconds`.
-The optional `takeovers` object maps pull-request numbers to lane ids, `remote_lanes` excludes lanes that cannot receive local steering, and `rollout_workflows` lists objects with `name` and optional `branch` fields.
-The optional `merge_method` is `merge`, `squash`, or `rebase`; without it the admin merge uses the first method the repository allows, in the order squash, merge, rebase.
-The optional `steering` object replaces the message sent to the owning lane for `conflict`, `red`, `behind`, `cancelled`, `threads`, or `ready` (a registered green pull request with no armed merge poll).
-Each template may use `{url}`, `{base}`, `{head}`, `{checks}`, `{cancelled}`, and `{threads}`, and a template that cannot be filled falls back to the neutral built-in wording.
-Name team-specific skills or branch policies in these templates rather than in the shared scripts.
-The author list and repository are required for the pull-request checks, and a missing or malformed file fails closed with a check diagnostic.
-
-Run `bin/fm-pr-stall-check.sh` from a registered `state/pr-stall.check.sh` shim to classify conflicts, failing checks, behind branches, cancelled-only rollups, and unresolved threads.
-The sweep steers the owning lane, re-nudges after `renudge_seconds`, invokes the guarded admin merge only after the eligibility script passes, and prints wake lines for merges, ownerless pull requests, and escalations.
-Register the shim with `bin/fm-check-register.sh pr-stall` after placing it at `state/pr-stall.check.sh`, or create an equivalent shim that invokes `bin/fm-pr-stall-sweep.py`.
-
-Use `bin/fm-pr-fleet-merge-eligible.sh`, `bin/fm-pr-fleet-any-eligible.sh`, and `bin/fm-pr-fleet-admin-merge.sh` for deterministic eligibility, condition checks, and the final guarded admin merge.
-The eligibility script requires a configured author, a non-draft mergeable pull request against the repository's default branch, no requested changes, resolved review threads, a successful rollup, an up-to-date branch, and a passing run for every configured required test check.
-When `required_test_checks` is omitted or empty, the successful rollup alone decides the check gate.
-To hold a pull request back from `bin/fm-pr-fleet-any-eligible.sh`, list its number on its own line in `fleet-merge-hold.txt` beside `fleet-watch.json` in `$FM_HOME/config`, or in the file named by `FM_FLEET_HOLD_FILE`.
-Set `FM_FLEET_MERGE_DRY_RUN=1` to exercise the admin-merge path without changing the forge.
-The fleet scripts call the GitHub CLI `gh` with its `api graphql`, `pr list --json`, `run list`, and `pr merge` flags; set `FM_FLEET_GH_BIN` only to point at a different `gh`-compatible binary, because `gh-axi` does not accept those flags.
-
-Run `bin/fm-release-rollout-check.sh` from a registered custom check to report each newly completed failed workflow in `rollout_workflows`.
-The check records the last observed run id under `state/` and ignores successful or skipped runs.
-Use the normal `FM_CHECK_INTERVAL` watcher cadence, or set `cadence_seconds` for tooling that schedules checks outside the watcher.
-
-The sanitized dispatch and brief additions in [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) and [`docs/examples/brief-include.md`](examples/brief-include.md) are starting points for a team's own private configuration.
-Keep provider names, project names, hostnames, account names, credentials, and captain preferences in the private home configuration rather than committing them.
-
 ## Environment variables
 
 Runtime tuning via environment variables (defaults shown):
@@ -2329,6 +2296,7 @@ FM_INACTIVE_RECONCILE_BUDGET_SECS=10  # 1..30-second scan deadline; wedged-scan 
 FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls, custom checks, or Relay dispatch)
 FM_TASK_INBOX_GRACE_SECS=90   # seconds an unhandled steering-inbox message may sit before the watcher attempts doorbell delivery on an idle pane; also the minimum spacing between attempts
 FM_TASK_INBOX_RING_MAX=3      # watcher delivery attempts without an acknowledgement before the task surfaces as a stale wake for recovery
+FM_TASK_INBOX_BUSY_MAX=2      # consecutive busy-deferred due polls before a stuck-busy stale wake; 1..999999999, at most 9 decimal digits, otherwise 2; policy: bin/fm-task-inbox-lib.sh
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_MAIL_CHECK_BUDGET=15   # seconds allowed for one standing mail poll; valid 5..25, cut to fit FM_CHECK_TIMEOUT
 FM_MAIL_POLL_MAX_WAKES=20   # per-poll wake cap for a mail poll; valid 1..200, keeps a flood from flooding firstmate
@@ -2348,8 +2316,6 @@ FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in C
 FM_CODEX_WATCH_CHECKPOINT_AWAY=3600  # requested away checkpoint bound on a home that runs the supervision host; longer of this and attended bound, capped at 27000
 FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-crew-state.sh, and per state-database run-inventory read behind a capped AXI overview
 FM_TEARDOWN_NM_TIMEOUT=10    # seconds allowed per no-mistakes query or abort inside fm-teardown.sh
-FM_READY_CHECK_TIMEOUT=1800   # seconds bounding one project-declared ready check run by bin/fm-ready-check.sh at a ship handoff or merge; must be a positive integer
-FM_CAPABILITY_CHECK_TIMEOUT=60   # seconds bounding each host capability probe bin/fm-capability-check.sh runs for a brief's `Proof surfaces:` line at dispatch; must be a positive integer
 FM_CREW_STATE_RUNS_LIMIT=200  # plain runs-ledger rows scanned for fallback attribution; does not change the CLI's AXI overview window (selection owner: bin/fm-nm-run-lib.sh)
 FM_TEARDOWN_NM_RUNS_LIMIT=200  # recent no-mistakes run rows scanned to prove an unresolved-head parked run belongs to teardown's task
 FM_CREW_STATE_BIN=bin/fm-crew-state.sh   # test override for the current-state reader used by watcher triage: the working/paused classification, and the wedge timer's parked-gate wait evidence
@@ -2402,10 +2368,6 @@ FM_SECONDMATE_LIVENESS_SECS=60   # seconds between watcher probes of each regist
 FM_SECONDMATE_LIVENESS_TIMEOUT=120   # seconds bounding one watcher-driven relaunch, so a wedged spawn cannot stall the poll; zero or invalid values use 120
 FM_SECONDMATE_LIVENESS_MAX_ATTEMPTS=3   # automatic relaunch attempts allowed per mate inside the window before the watcher parks auto-relaunch behind state/.secondmate-relaunch-bound-<id> and escalates once; a later live probe clears the marker and restores the full attempt budget (the ledger keeps its history behind a `rearmed` row); zero or invalid values use 3
 FM_SECONDMATE_LIVENESS_WINDOW_SECS=3600   # window the relaunch bound counts state/.secondmate-relaunch-<id> attempt lines over; the file is also the durable per-mate relaunch record; zero or invalid values use 3600
-FM_HARNESS_CRASH_MAX_ATTEMPTS=3   # automatic fresh relaunches, through bin/fm-control.sh relaunch, allowed per ship or scout inside the window when its idle pane ends on a terminal harness API error recognized by bin/fm-harness-crash-lib.sh; past the bound the pane surfaces as one ordinary stale wake naming the error; 0 disables the relaunch and always surfaces; invalid values use 3
-FM_HARNESS_CRASH_WINDOW_SECS=3600   # window the harness-crash relaunch bound counts state/.harness-crash-relaunch-<id> attempt lines over; the file is also the durable per-task relaunch record; zero or invalid values use 3600
-FM_HARNESS_CRASH_TIMEOUT=300   # seconds bounding one watcher-driven harness-crash relaunch, so a wedged relaunch cannot stall the poll; zero or invalid values use 300
-FM_HARNESS_CRASH_PER_POLL=1   # harness-crash relaunches one watcher poll runs; a further crashed pane stays stale and unmarked and is relaunched on a later poll, so a fleet-wide crash cannot stall the watcher for minutes; zero or invalid values use 1
 FM_WEDGE_DEMAND_INSPECT_COUNT=3    # consecutive provably-working stale escalations on the same unchanged pane before demand-deep-inspection is added
 FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'   # directory names the wedge detector's task-worktree write probe skips; the default keeps .git out so a supervisor's own read-only git command can never look like crew progress; set it to the empty string to prune nothing, which widens the probe to the whole depth-bounded tree rather than disabling it
 FM_WORKTREE_WRITE_MAXDEPTH=6       # depth that same probe walks below the recorded worktree; it runs only at the moment a wedge escalation would otherwise fire, never on every poll; no probe knob applies to a secondmate, whose recorded worktree is a provisioned home the probe skips entirely

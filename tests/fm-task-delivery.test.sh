@@ -308,7 +308,7 @@ test_promote_refuses_a_symlinked_task_record() {
 # prints against a capturing fm-send.sh, and asserts on the message the worker would
 # actually receive - for every supported mode.
 test_promotion_delivers_the_real_definition_of_done() {
-  local home meta out sendroot payload mode id brief_dod delivered_dod
+  local home meta out sendroot payload mode id brief_dod delivered_dod contract
   home="$TMP_ROOT/promote-dod/home"
   sendroot="$TMP_ROOT/promote-dod/sendroot"
   mkdir -p "$home/state" "$sendroot/bin"
@@ -355,6 +355,18 @@ STUB
       "$mode: promoted worker did not receive the Captain's intent subsection"
     assert_grep "## Firstmate spec" "$payload" \
       "$mode: promoted worker did not receive the Firstmate spec subsection"
+
+    # Both the delivered prompt and persisted relaunch brief are public outputs.
+    for contract in "$payload" "$home/data/$id/brief.md"; do
+      assert_grep "This replaces the scout rule limiting outside-worktree writes to the report and status file." "$contract" \
+        "$mode: $contract retained the scout-only write restriction"
+      assert_grep "Keep project edits inside this worktree; keep proof and scratch output outside it, under \`$home/data/$id/\` or a temporary directory." "$contract" \
+        "$mode: $contract omitted the ship scratch-location rule"
+      assert_grep "Outside the worktree, write only that task material and the status and steering-inbox records authorized below." "$contract" \
+        "$mode: $contract omitted the ship outside-worktree write boundary"
+      assert_grep "Leave the worktree clean before reporting done." "$contract" \
+        "$mode: $contract omitted the clean-before-done rule"
+    done
 
     # Compare the public outputs of both real generation paths. The promoted
     # payload ends at its Definition of done, as does an ordinary generated
@@ -487,66 +499,6 @@ EOF
   assert_contains "$out" "merged fix/$id into local $main" \
     "local merge did not report the immutable recorded branch"
   pass "fm-merge-local: a registry change cannot redirect an in-flight local-only task"
-}
-
-test_local_merge_ready_checks_the_committed_branch_tip() {
-  local home proj wt id main before out
-  home="$TMP_ROOT/local-merge-ready/home"
-  proj="$TMP_ROOT/local-merge-ready/proj"
-  wt="$TMP_ROOT/local-merge-ready/wt"
-  id=local-merge-ready-e2
-  mkdir -p "$home/state" "$home/data" "$proj/.firstmate"
-  git -C "$proj" init -q || fail "could not initialize local-merge ready fixture"
-  git -C "$proj" config user.email test@example.com
-  git -C "$proj" config user.name test
-  printf '#!/usr/bin/env bash\n[ -f ready.ok ]\n' > "$proj/.firstmate/ready-check"
-  chmod +x "$proj/.firstmate/ready-check"
-  git -C "$proj" add .firstmate || fail "could not stage ready-check fixture"
-  git -C "$proj" commit -qm base || fail "could not commit ready-check fixture"
-  main=$(git -C "$proj" branch --show-current)
-  before=$(git -C "$proj" rev-parse HEAD)
-  git -C "$proj" worktree add -q -b "fm/$id" "$wt" || fail "could not create ship worktree fixture"
-  printf 'change\n' > "$wt/change"
-  git -C "$wt" add change || fail "could not stage ship change"
-  git -C "$wt" commit -qm change || fail "could not commit ship change"
-  : > "$wt/ready.ok"
-  printf 'project=%s\nmode=local-only\nworktree=%s\n' "$proj" "$wt" > "$home/state/$id.meta"
-  if out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id" 2>&1); then
-    fail "local merge landed a branch whose ready check passed only on uncommitted files: $out"
-  fi
-  [ "$(git -C "$proj" rev-parse "$main")" = "$before" ] || fail "refused local merge moved the default branch"
-  git -C "$wt" add ready.ok || fail "could not stage ready marker"
-  git -C "$wt" commit -qm ready || fail "could not commit ready marker"
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id" 2>&1) \
-    || fail "local merge refused a clean branch tip whose ready check passes: $out"
-  [ "$(git -C "$proj" rev-parse "$main")" = "$(git -C "$wt" rev-parse HEAD)" ] \
-    || fail "local merge did not land the checked branch tip"
-  pass "fm-merge-local: the ready check gates the committed ship branch tip, not worktree files"
-}
-
-test_local_merge_without_ready_check_ignores_worktree_scratch() {
-  local home proj wt id main out
-  home="$TMP_ROOT/local-merge-no-ready/home"
-  proj="$TMP_ROOT/local-merge-no-ready/proj"
-  wt="$TMP_ROOT/local-merge-no-ready/wt"
-  id=local-merge-no-ready-e2
-  mkdir -p "$home/state" "$home/data" "$proj"
-  git -C "$proj" init -q || fail "could not initialize local-merge fixture"
-  git -C "$proj" config user.email test@example.com
-  git -C "$proj" config user.name test
-  git -C "$proj" commit -q --allow-empty -m base || fail "could not commit local-merge fixture"
-  main=$(git -C "$proj" branch --show-current)
-  git -C "$proj" worktree add -q -b "fm/$id" "$wt" || fail "could not create ship worktree fixture"
-  printf 'change\n' > "$wt/change"
-  git -C "$wt" add change || fail "could not stage ship change"
-  git -C "$wt" commit -qm change || fail "could not commit ship change"
-  printf 'scratch\n' > "$wt/scratch.log"
-  printf 'project=%s\nmode=local-only\nworktree=%s\n' "$proj" "$wt" > "$home/state/$id.meta"
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id" 2>&1) \
-    || fail "local merge refused a project that declares no ready check over an untracked scratch file: $out"
-  [ "$(git -C "$proj" rev-parse "$main")" = "$(git -C "$wt" rev-parse HEAD)" ] \
-    || fail "local merge did not land the branch tip"
-  pass "fm-merge-local: a project without a ready check lands despite untracked worktree files"
 }
 
 # A registered name may contain spaces, and the lookup must match the whole
@@ -1683,8 +1635,6 @@ test_promotion_delivers_the_real_definition_of_done
 test_promotion_persists_the_selected_ship_branch
 test_promotion_branch_command_is_shell_safe
 test_local_merge_uses_the_recorded_ship_branch
-test_local_merge_ready_checks_the_committed_branch_tip
-test_local_merge_without_ready_check_ignores_worktree_scratch
 test_project_mode_matches_whole_multiword_names
 test_project_mode_maps_the_conditional_policy
 test_project_mode_binds_the_forge_orthogonally

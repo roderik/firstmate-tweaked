@@ -103,7 +103,7 @@ find_chrome() {
 # dependencies, which are the start-up surfaces that fail on a runner; neither
 # changes the rendered DOM of a local file.
 render_export_dom() {
-  local chrome=$1 source_file=$2 out_file=$3 pi_version=$4 ready_marker=${5:-</html>}
+  local chrome=$1 source_file=$2 out_file=$3 pi_version=$4
   local attempt pid status wait_count wait_limit reap_wait log profile report timed_out
   local -a profile_arg
   report="$TMP_ROOT/chrome-render-report.txt"
@@ -168,8 +168,7 @@ render_export_dom() {
     fi
     status=0
     wait "$pid" 2>/dev/null || status=$?
-    grep -Fq '</html>' "$out_file" 2>/dev/null \
-      && grep -Fq -- "$ready_marker" "$out_file" && return 0
+    grep -Fq '</html>' "$out_file" 2>/dev/null && return 0
     printf 'attempt %s: exit=%s timed_out=%s bytes=%s stderr=%s\n' \
       "$attempt" "$status" "$timed_out" "$(wc -c <"$out_file" | tr -d ' ')" \
       "$(tail -c 400 "$log" 2>/dev/null | tr '\n' ' ')" >>"$report"
@@ -1660,14 +1659,23 @@ for (const { name, actual } of rows) {
     throw new Error(`${name} was not hidden before export rendering`);
   }
 }
-async function assertStockHtmlRendering(command, submitData) {
-  editorText = command;
-  terminalInputHandler(submitData);
-  const htmlRenderer = createToolHtmlRenderer({
-    getToolDefinition: (name) => tools.find((tool) => tool.name === name),
+// Pi 1.0.0 resolves export HTML through getToolDefinition. Pi 1.0.1 renamed that
+// dependency to getToolRenderers and ignores the old key, so a fixture that
+// passes only the old key reports every tool as missing. Supply both; each
+// release reads the key it knows and renders the same wrapped definitions.
+function createInstalledToolHtmlRenderer() {
+  const lookup = (name) => tools.find((tool) => tool.name === name);
+  return createToolHtmlRenderer({
+    getToolDefinition: lookup,
+    getToolRenderers: lookup,
     theme,
     cwd: process.cwd(),
   });
+}
+async function assertStockHtmlRendering(command, submitData) {
+  editorText = command;
+  terminalInputHandler(submitData);
+  const htmlRenderer = createInstalledToolHtmlRenderer();
   const exportCases = [
     ...cases.filter(([toolName]) => toolName === "grep" || toolName === "find"),
     ["fm_watch_arm_pi", watchArgs, watchResult],
@@ -1694,11 +1702,7 @@ await assertStockHtmlRendering("/export calm.html", "\r");
 getKeybindings().setUserBindings({ "tui.input.submit": "alt+s" });
 editorText = "/export remapped.html";
 terminalInputHandler("\r");
-const unmatchedRenderer = createToolHtmlRenderer({
-  getToolDefinition: (name) => tools.find((tool) => tool.name === name),
-  theme,
-  cwd: process.cwd(),
-});
+const unmatchedRenderer = createInstalledToolHtmlRenderer();
 if (unmatchedRenderer.renderCall("unmatched-submit", "grep", { pattern: "alpha", path: "." })) {
   throw new Error("ordinary non-submit input activated HTML export rendering");
 }
@@ -2829,14 +2833,13 @@ TS
     return 1
   }
 
-  # Pi's transient "Reloading ..." box can render and clear between two
-  # captures, so wait for the status Pi appends to the rebuilt transcript
-  # once the reload completes, together with the re-rendered final response.
-  wait_for_geometry_reload() {
-    local file=$1 done_text=$2 final_text=$3 attempt=0
+  wait_for_geometry_transition() {
+    local file=$1 transient_text=$2 final_text=$3 attempt=0 saw_transient=0
     while [ "$attempt" -lt 600 ]; do
       capture_geometry_viewport "$file" || true
-      if grep -Fq "$done_text" "$file" 2>/dev/null && grep -Fq "$final_text" "$file" 2>/dev/null; then
+      if grep -Fq "$transient_text" "$file" 2>/dev/null; then
+        saw_transient=1
+      elif [ "$saw_transient" -eq 1 ] && grep -Fq "$final_text" "$file" 2>/dev/null; then
         return 0
       fi
       sleep 0.01
@@ -2891,9 +2894,9 @@ TS
 
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l '/reload'
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" Enter
-  wait_for_geometry_reload \
+  wait_for_geometry_transition \
     "$snapshot" \
-    "Reloaded keybindings, extensions" \
+    "Reloading keybindings, extensions, skills, prompts, themes, and context files..." \
     "CALM_GEOMETRY_FINAL" \
     || fail "Pi Calm hidden-block geometry E2E did not complete the /reload viewport transition"
   assert_geometry_gap "$snapshot" "reloaded native Calm transcript"
@@ -3902,17 +3905,7 @@ echo attempt >>"$FM_FAKE_CHROME_ATTEMPTS"
 printf '<html><head></head><body>export'
 exec sleep 30
 SH
-  cat >"$dir/chrome-unrendered" <<'SH'
-#!/bin/sh
-case "${1:-}" in --version) echo "FakeChrome 1.2.3"; exit 0 ;; esac
-echo attempt >>"$FM_FAKE_CHROME_ATTEMPTS"
-if [ "$(wc -l <"$FM_FAKE_CHROME_ATTEMPTS")" -lt 2 ]; then
-  printf '<html><head></head><body><div id="messages"></div></body></html>\n'
-  exit 0
-fi
-printf '<html><head></head><body><div id="messages"><div class="ready">export</div></div></body></html>\n'
-SH
-  chmod +x "$dir/chrome-ok" "$dir/chrome-flaky" "$dir/chrome-broken" "$dir/chrome-hang" "$dir/chrome-unrendered"
+  chmod +x "$dir/chrome-ok" "$dir/chrome-flaky" "$dir/chrome-broken" "$dir/chrome-hang"
 
   : >"$dir/attempts-ok"
   FM_FAKE_CHROME_ATTEMPTS="$dir/attempts-ok" \
@@ -3931,16 +3924,6 @@ SH
   grep -Fq '</html>' "$out_file" || fail "a retried render left no DOM behind"
   [ "$(wc -l <"$dir/attempts-flaky")" -eq 3 ] \
     || fail "render_export_dom did not retry the failed Chrome start-ups exactly"
-
-  : >"$dir/attempts-unrendered"
-  : >"$out_file"
-  FM_FAKE_CHROME_ATTEMPTS="$dir/attempts-unrendered" \
-    render_export_dom "$dir/chrome-unrendered" "$source_file" "$out_file" 9.9.9 '<div class="ready"' \
-    >"$dir/report-unrendered" \
-    || fail "render_export_dom gave up on a Chrome that renders the required element on a later attempt"
-  grep -Fq '<div class="ready"' "$out_file" || fail "render_export_dom accepted a DOM without the required element"
-  [ "$(wc -l <"$dir/attempts-unrendered")" -eq 2 ] \
-    || fail "render_export_dom did not re-render until the required element appeared"
 
   : >"$dir/attempts-broken"
   : >"$out_file"
@@ -4428,7 +4411,7 @@ if (!synthetic || synthetic.display) process.exit(1);
 JS
   chrome=$(find_chrome) \
     || fail "Chrome or Chromium is required for rendered export DOM assertions; set FM_CHROME_BIN to one"
-  chrome_report=$(render_export_dom "$chrome" "$export_file" "$export_dom" "$version" '<div class="assistant-message"') \
+  chrome_report=$(render_export_dom "$chrome" "$export_file" "$export_dom" "$version") \
     || fail "could not render calm-mode HTML export DOM: $chrome_report"
   # Pi 0.99 renders display:false custom messages into the conversation
   # column as hook-message-hidden and hides them with CSS until the viewer

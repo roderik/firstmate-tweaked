@@ -4,7 +4,6 @@
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
-#        fm-spawn.sh <review-id> --review-of <author-task-id> [--harness <name>] [--model <name>] [--effort <level>]
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -227,15 +226,6 @@
 #   secondmate receives the primary's read-only shared captain-preference file
 #   (fm-config-inherit-lib.sh). A successful launch clears pending inherited
 #   config reread generations because the new agent reads the converged files.
-#   --review-of creates a read-only scout tab or pane in the author's existing
-#   workspace without allocating a Treehouse or Orca worktree. It is supported
-#   on tmux and Herdr; on other backends, or when the author's endpoint or
-#   worktree is gone (including a recorded endpoint that no longer exists), it
-#   logs the reason and falls back to a pooled review worktree in the author's
-#   project. Reviewer harness wiring never lands in the author's worktree:
-#   Claude's hooks ride a state-dir --settings file with the author's local
-#   settings excluded via --setting-sources, and opencode, grok, and kimi
-#   (whose wiring is worktree-resident) are refused.
 #   --scout records kind=scout in the task's meta (report deliverable, scratch worktree;
 #   see AGENTS.md task lifecycle); --secondmate records kind=secondmate and launches in a
 #   provisioned firstmate home; the default is kind=ship.
@@ -664,9 +654,6 @@ BACKEND_ARG=
 MODE=
 YOLO=
 BRANCH_PREFIX=fm/
-REVIEW_OF=
-REVIEW=0
-REVIEW_FALLBACK=0
 TRACEPARENT_ARG=
 HARNESS_SET=0
 MODEL_SET=0
@@ -720,10 +707,6 @@ for a in "$@"; do
       TRACEPARENT_ARG=$a
       TRACEPARENT_SET=1
       ;;
-    review-of)
-      REVIEW_OF=$a
-      REVIEW=1
-      ;;
     *)
       echo "error: internal parser state for --$want_value" >&2
       exit 1
@@ -742,7 +725,6 @@ for a in "$@"; do
     KIND_SET=1
     ;;
   --relaunch) RELAUNCH=1 ;;
-  --review-of) want_value=review-of ;;
   --harness) want_value=harness ;;
   --harness=*)
     HARNESS_ARG=${a#--harness=}
@@ -783,10 +765,6 @@ for a in "$@"; do
     TRACEPARENT_ARG=${a#--traceparent=}
     TRACEPARENT_SET=1
     ;;
-  --review-of=*)
-    REVIEW_OF=${a#--review-of=}
-    REVIEW=1
-    ;;
   *) POS+=("$a") ;;
   esac
 done
@@ -822,17 +800,6 @@ done
   echo "error: --traceparent requires a non-empty value" >&2
   exit 1
 }
-if [ "$REVIEW" -eq 1 ]; then
-  [ -n "$REVIEW_OF" ] || { echo "error: --review-of requires an author task id" >&2; exit 1; }
-  [ "$RELAUNCH" -eq 0 ] || { echo "error: --review-of cannot be combined with --relaunch" >&2; exit 1; }
-  [ "$KIND_SET" -eq 0 ] || { echo "error: --review-of cannot be combined with --scout or --secondmate" >&2; exit 1; }
-  [ "$MODE_SET" -eq 0 ] || { echo "error: --review-of does not accept --mode" >&2; exit 1; }
-  [ "$YOLO_SET" -eq 0 ] || { echo "error: --review-of does not accept --yolo" >&2; exit 1; }
-  [ "$BRANCH_PREFIX_SET" -eq 0 ] || { echo "error: --review-of does not accept --branch-prefix" >&2; exit 1; }
-  [ "${#POS[@]}" -eq 1 ] || { echo "error: --review-of takes only <review-id>; the author is supplied by --review-of" >&2; exit 1; }
-  fm_task_id_path_safe "$REVIEW_OF" || { echo "error: invalid author task id '$REVIEW_OF'" >&2; exit 2; }
-  KIND=scout
-fi
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -1537,64 +1504,6 @@ fm_task_id_creation_valid "$ID" || {
   echo "error: invalid task id" >&2
   exit 2
 }
-REVIEW_META=
-REVIEW_AUTHOR_BACKEND=
-REVIEW_AUTHOR_TARGET=
-REVIEW_AUTHOR_WORKTREE=
-REVIEW_AUTHOR_PROJECT=
-REVIEW_AUTHOR_HERDR_WORKSPACE=
-if [ "$REVIEW" -eq 1 ]; then
-  REVIEW_META="$STATE/$REVIEW_OF.meta"
-  [ -f "$REVIEW_META" ] && [ ! -L "$REVIEW_META" ] || {
-    echo "error: review author task $REVIEW_OF has no safe metadata record at $REVIEW_META" >&2
-    exit 1
-  }
-  REVIEW_AUTHOR_BACKEND=$(fm_meta_get "$REVIEW_META" backend)
-  [ -n "$REVIEW_AUTHOR_BACKEND" ] || REVIEW_AUTHOR_BACKEND=tmux
-  REVIEW_AUTHOR_TARGET=$(fm_backend_target_of_meta "$REVIEW_META") || REVIEW_AUTHOR_TARGET=
-  REVIEW_AUTHOR_WORKTREE=$(fm_meta_get "$REVIEW_META" worktree)
-  REVIEW_AUTHOR_PROJECT=$(fm_meta_get "$REVIEW_META" project)
-  [ -d "$REVIEW_AUTHOR_PROJECT" ] || {
-    echo "error: review author task $REVIEW_OF has no project record; cannot fall back to a pool-worktree review" >&2
-    exit 1
-  }
-  REVIEW_FALLBACK_REASON=
-  if [ -z "$REVIEW_AUTHOR_TARGET" ]; then
-    REVIEW_FALLBACK_REASON="author task $REVIEW_OF has no recorded endpoint"
-  elif [ ! -d "$REVIEW_AUTHOR_WORKTREE" ]; then
-    REVIEW_FALLBACK_REASON="author worktree '$REVIEW_AUTHOR_WORKTREE' is gone"
-  else
-    case "$REVIEW_AUTHOR_BACKEND" in
-      tmux)
-        { fm_backend_source tmux && fm_backend_tmux_window_exists "$REVIEW_AUTHOR_TARGET"; } \
-          || REVIEW_FALLBACK_REASON="author endpoint $REVIEW_AUTHOR_TARGET on $REVIEW_AUTHOR_BACKEND is gone"
-        ;;
-      herdr)
-        fm_backend_target_exists "$REVIEW_AUTHOR_BACKEND" "$REVIEW_AUTHOR_TARGET" \
-          || REVIEW_FALLBACK_REASON="author endpoint $REVIEW_AUTHOR_TARGET on $REVIEW_AUTHOR_BACKEND is gone"
-        ;;
-      *) REVIEW_FALLBACK_REASON="review-in-author-workspace is unsupported on backend '$REVIEW_AUTHOR_BACKEND'" ;;
-    esac
-  fi
-  if [ -n "$REVIEW_FALLBACK_REASON" ]; then
-    REVIEW=0
-    REVIEW_FALLBACK=1
-    echo "notice: review $ID of $REVIEW_OF falls back to a pooled review worktree in $REVIEW_AUTHOR_PROJECT: $REVIEW_FALLBACK_REASON" >&2
-  fi
-  if [ "$REVIEW" -eq 1 ]; then
-  if [ "$BACKEND_SET" -eq 1 ] && [ "$BACKEND_ARG" != "$REVIEW_AUTHOR_BACKEND" ]; then
-    echo "error: review backend '$BACKEND_ARG' does not match author backend '$REVIEW_AUTHOR_BACKEND'" >&2
-    exit 1
-  fi
-  BACKEND_ARG=$REVIEW_AUTHOR_BACKEND
-  BACKEND_SET=1
-  PROJ="$REVIEW_AUTHOR_PROJECT"
-  if [ "$REVIEW_AUTHOR_BACKEND" = herdr ]; then
-    REVIEW_AUTHOR_HERDR_WORKSPACE=$(fm_meta_get "$REVIEW_META" herdr_workspace_id)
-    [ -n "$REVIEW_AUTHOR_HERDR_WORKSPACE" ] || { echo "error: author task $REVIEW_OF lacks herdr_workspace_id" >&2; exit 1; }
-  fi
-  fi
-fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
   BRANCH="$BRANCH_PREFIX$ID"
   if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
@@ -1868,10 +1777,6 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
-  if [ -n "$(fm_meta_get "$RELAUNCH_META" review_of)" ]; then
-    echo "error: task $ID is a review in another task's workspace; tear it down and spawn a fresh --review-of instead of relaunching it" >&2
-    exit 1
-  fi
   # A secondmate whose endpoint is gone already has ONE owner for that
   # recovery: the session-start liveness sweep respawns it with
   # `fm-spawn.sh <id> --secondmate`, which stands its home's own workspace back
@@ -1949,11 +1854,7 @@ elif [ "$KIND" = secondmate ]; then
     ;;
   esac
 else
-  if [ "$REVIEW" -eq 1 ] || [ "$REVIEW_FALLBACK" -eq 1 ]; then
-    PROJ="$REVIEW_AUTHOR_PROJECT"
-  else
-    PROJ=${POS[1]}
-  fi
+  PROJ=${POS[1]}
   ARG3=${POS[2]:-}
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
@@ -2369,18 +2270,6 @@ case "$ARG3" in
   }
   ;;
 esac
-if [ "$REVIEW" -eq 1 ]; then
-  [ "$RAW_LAUNCH" -eq 0 ] || {
-    echo "error: a review in the author's workspace cannot use a raw launch command; its harness wiring must stay out of the author's worktree" >&2
-    exit 1
-  }
-  case "$HARNESS" in
-  opencode* | grok* | kimi*)
-    echo "error: harness '$HARNESS' cannot review in author task $REVIEW_OF's workspace: its turn-end wiring lives inside the worktree and would overwrite the author's; pick another harness for this review" >&2
-    exit 1
-    ;;
-  esac
-fi
 
 # muse, gemini, agy, and devin are verified as CREWMATE/SCOUT adapters only. A secondmate is
 # a firstmate instance, so it needs a primary supervision protocol.
@@ -3124,17 +3013,11 @@ if [ "$KIND" = secondmate ]; then
     BRIEF="$DATA/$ID/brief.md"
   fi
 else
-  if [ "$REVIEW" -eq 1 ]; then
-    PROJ_ABS=$(cd "$REVIEW_AUTHOR_PROJECT" && pwd)
-    WT="$REVIEW_AUTHOR_WORKTREE"
-    BRIEF="$DATA/$ID/brief.md"
-  else
-    PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
-    WT=""
-    BRIEF="$DATA/$ID/brief.md"
-  fi
+  PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
+  WT=""
+  BRIEF="$DATA/$ID/brief.md"
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$REVIEW" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   SPAWN_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ_ABS") || {
     echo "error: could not resolve the shared Treehouse project lock for $PROJ_ABS" >&2
     exit 1
@@ -3174,27 +3057,6 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
       fi
     fi
   fi
-  # Proof-producing briefs may declare host capabilities on one line, for
-  # example `Proof surfaces: browser, attachments`. Check them before any
-  # endpoint or worktree allocation so a missing capability is reported at
-  # dispatch.
-  PROOF_SURFACES=$(sed -n 's/^[[:space:]]*Proof surfaces:[[:space:]]*//p' "$BRIEF" | head -n 1)
-  if [ -n "$PROOF_SURFACES" ]; then
-    OLD_IFS=$IFS
-    IFS=','
-    # shellcheck disable=SC2206
-    proof_surface_list=($PROOF_SURFACES)
-    IFS=$OLD_IFS
-    for proof_surface in "${proof_surface_list[@]}"; do
-      proof_surface=$(printf '%s' "$proof_surface" | tr -d '[:space:]')
-      [ -n "$proof_surface" ] || continue
-      case "$proof_surface" in browser|attachments|pool|seed|ci) ;; *) echo "error: unknown proof surface '$proof_surface' in $BRIEF" >&2; exit 1 ;; esac
-      "$SCRIPT_DIR/fm-capability-check.sh" --surface "$proof_surface" --project "$PROJ_ABS" || {
-        echo "error: required host capability '$proof_surface' is unavailable; refusing dispatch before endpoint creation" >&2
-        exit 1
-      }
-    done
-  fi
   # Use the existing launch-brief overlay for every worker kind, including
   # pre-scope briefs and relaunches. Charters never enter this worker path.
   SOURCE_BRIEF=$BRIEF
@@ -3206,12 +3068,6 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
       cat "$SOURCE_BRIEF" &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
         fm_brief_intent_overlay "$CAPTAIN_INTENT"
-      elif [ "$REVIEW" -eq 1 ]; then
-        printf '\n## Review workspace contract\n\n'
-        printf '%s\n' 'This is an independent read-only review of author task '"$REVIEW_OF"'.'
-        printf '%s\n' 'Do not edit files, switch branches, change the git index or HEAD, start a local stack, or run any command that mutates the worktree.'
-        printf '%s\n' 'Read the author commit from this worktree with git show and git diff only; the author may continue committing while you review.'
-        printf '%s\n' 'Report findings through this task status and steering inbox, then stop when the review is complete.'
       fi
   } >"$BRIEF_TMP" || {
     rm -f -- "$BRIEF_TMP"
@@ -3622,7 +3478,7 @@ herdr_projection_existing_meta_allows_flat() { # <meta>
 # a live pane. The authoritative mutation still runs under the meta lock below.
 BACKLOG_TRANSITION=0
 BACKLOG_ROW_STATE=
-if [ "$REVIEW" -eq 0 ] && fm_backlog_transition_applies "$CONFIG" "$DATA" "$KIND"; then
+if fm_backlog_transition_applies "$CONFIG" "$DATA" "$KIND"; then
   BACKLOG_TRANSITION=1
   if fm_backlog_row_probe "$DATA" "$ID"; then
     BACKLOG_ROW_STATE=$FM_BACKLOG_ROW_STATE
@@ -3749,28 +3605,6 @@ EOF
     SES=$HERDR_SES
     WT_TARGET=$T
   fi
-elif [ "$REVIEW" -eq 1 ]; then
-  # A review opens ONE endpoint beside its author, never the generic task
-  # endpoint: that would take the same fm-<id> name in the shared session.
-  case "$BACKEND" in
-  tmux)
-    REVIEW_WID=$(fm_backend_tmux_create_review_task "$REVIEW_AUTHOR_TARGET" "$W" "$WT") || exit 1
-    T="${REVIEW_AUTHOR_TARGET%%:*}:$W"
-    WT_TARGET="$REVIEW_WID"
-    ;;
-  herdr)
-    REVIEW_CONTAINER="${REVIEW_AUTHOR_TARGET%%:*}:$REVIEW_AUTHOR_HERDR_WORKSPACE"
-    REVIEW_TASK_IDS=$(fm_backend_herdr_create_review_task "$REVIEW_CONTAINER" "$W" "$WT") || exit 1
-    read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
-$REVIEW_TASK_IDS
-EOF
-    [ -n "$HERDR_TAB_ID" ] && [ -n "$HERDR_PANE_ID" ] || { echo "error: herdr did not return review tab/pane ids" >&2; exit 1; }
-    HERDR_SES=${REVIEW_AUTHOR_TARGET%%:*}
-    HERDR_WORKSPACE_ID=$REVIEW_AUTHOR_HERDR_WORKSPACE
-    T="$HERDR_SES:$HERDR_PANE_ID"
-    WT_TARGET="$T"
-    ;;
-  esac
 else
   case "$BACKEND" in
   tmux)
@@ -4414,7 +4248,7 @@ elif [ "$RELAUNCH" -eq 1 ]; then
     fi
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
-elif [ "$REVIEW" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
@@ -4496,7 +4330,7 @@ elif [ "$REVIEW" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ];
     SPAWN_SLOT_CLAIMED=1
   fi
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$REVIEW" -eq 0 ] && [ "$KIND" != secondmate ]; then
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
 
@@ -4663,26 +4497,17 @@ if [ "$KIND" != secondmate ]; then
     # the turn-ended NOTIFICATION touch for the watcher. Every
     # hook command tolerates a refused event (|| true) so a stale-gen writer
     # can never break Claude's own lifecycle.
+    mkdir -p "$WT/.claude"
     busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
     busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
     j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true")
     j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
     j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
     j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
-    claude_hooks='"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'$j_submit'"}]}],"Stop":[{"hooks":[{"type":"command","command":"'$j_stop'"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"'$j_stopfail'"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"'$j_sessionend'"}]}]}'
-    if [ "$REVIEW" -eq 1 ]; then
-      # A reviewer shares the author's worktree, so its hooks ride the launch's
-      # own --settings file in state/ and never replace the author's
-      # settings.local.json. The file also carries the inline launch policy it
-      # replaces on the command line.
-      claude_policy='"feedbackDrafts":"off"'
-      [ "$KEEP_AI_TRAILERS" = 1 ] || claude_policy="$claude_policy"',"attribution":{"commit":"","pr":"","sessionUrl":false}'
-      printf '{%s,%s}\n' "$claude_policy" "$claude_hooks" >"$STATE_REAL/$ID.claude-settings.json"
-    else
-      mkdir -p "$WT/.claude"
-      printf '{%s}\n' "$claude_hooks" >"$WT/.claude/settings.local.json"
-      exclude_path '.claude/settings.local.json'
-    fi
+    cat >"$WT/.claude/settings.local.json" <<EOF
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+EOF
+    exclude_path '.claude/settings.local.json'
     ;;
   devin)
     if [ "$RAW_LAUNCH" -eq 0 ]; then
@@ -4859,11 +4684,11 @@ EOF
     ;;
   codex*)
     # Semantic busy-state source negotiation (bin/fm-busy-lib.sh owns the
-    # probes and the evidence). Neither Codex PUSH path is usable for a
-    # worker: a pane worker's turns are not observable through the
-    # app-server protocol, and this launch disables the hook layer. Codex
-    # instead classifies through its own durable rollout, a pull source
-    # bound from this meta's worktree= and spawn_gen= alone, so no busy
+    # probes and the evidence). Neither Codex path is usable on the
+    # installed binary: a pane worker's turns are not observable through
+    # the app-server protocol, and its lifecycle hooks did not fire for a
+    # firstmate-launched worker. Codex therefore classifies unknown with
+    # an explicit reason rather than falling back to idle, and no busy
     # wiring is installed. The turn-end NOTIFICATION marker still rides
     # the launch command via -c notify=[...] and __TURNEND__.
     ;;
@@ -5078,7 +4903,6 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
-  [ "$REVIEW" -eq 0 ] || echo "review_of=$REVIEW_OF"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   [ -z "${BRANCH:-}" ] || echo "branch=$BRANCH"
@@ -5239,9 +5063,6 @@ if [ "$RELAUNCH" -eq 1 ]; then
 fi
 LAUNCH=${LAUNCH//__PIRESUME__/$RESUME_ARGS}
 LAUNCH=${LAUNCH//__CLAUDEPERMFLAG__/$CLAUDE_PERM_FLAG}
-if [ "$REVIEW" -eq 1 ]; then
-  LAUNCH=${LAUNCH//\'\{\"feedbackDrafts\":\"off\"__CLAUDEATTRIBUTION__\}\'/"$(shell_quote "$STATE_REAL/$ID.claude-settings.json") --setting-sources user,project"}
-fi
 if [ "$KEEP_AI_TRAILERS" = 1 ]; then
   LAUNCH=${LAUNCH//__CLAUDEATTRIBUTION__/}
 else

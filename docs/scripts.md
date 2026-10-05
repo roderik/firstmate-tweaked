@@ -115,7 +115,6 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-quota-choose.sh`     | Choose the first candidate with known positive quota from an ordered harness:model list |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |
 | `fm-wake-drain.sh`       | Present and acknowledge the current actor's claimed wake rows alongside status, outcome-backstop, decision, divergence, supervision-host outcome, recovery, and supervision checks |
-| `fm-supervision-context.sh` | Run one wake drain and print its labeled, untruncated output with drain stderr (acknowledgement and guard alarms) first; never acknowledges |
 | `fm-wake-grant.sh`       | Serialize Pi supervision-branch wake-row claim activation, publication, release, and deactivation |
 | `fm-wake-lib.sh`         | Shared durable wake queue, recovery generations, portable locks, and watcher identity/health helpers |
 | `fm-path-lib.sh`         | Fork-free `dirname`/`basename` equivalents with no source-time side effects             |
@@ -138,20 +137,10 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication, merge-notification identity, and retirement |
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated pull-request, merge-request, and Gerrit-change poll sidecars |
 | `fm-contributions.sh`    | Observe owned publications, retain exact-head judgments, measure required actors, and wake on maintainer signals |
-| `fm-pr-check.sh`         | Record the PR head, owner, base, and merge owner; route configured reviews and arm a static merge poll (see [architecture.md](architecture.md)) |
-| `fm-review-route.sh`     | Configure a review owner, dispatch exact-head review requests, and enforce the two-round cap with a named blocking-finding exception |
+| `fm-pr-check.sh`         | Record validated task `pr=` and `pr_head=` values, then atomically arm a static merge poll; refuses GitHub drafts and persistent secondmate records (see [architecture.md](architecture.md)) |
 | `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub or GitLab URL, refuse a Gerrit change because firstmate never submits one, then refuse an outcome it cannot prove landed or queued |
-| `fm-fleet-config.sh`     | Read the private fleet pull-request and rollout watch configuration |
-| `fm-pr-fleet-merge-eligible.sh` | Apply deterministic, configurable fleet pull-request merge gates |
-| `fm-pr-fleet-any-eligible.sh` | Print configured fleet pull requests that pass the merge gates |
-| `fm-pr-fleet-admin-merge.sh` | Re-check and admin-merge one eligible fleet pull request |
-| `fm-pr-stall-sweep.py`    | Steer owners and surface or merge stalled configured fleet pull requests |
-| `fm-pr-stall-check.sh`    | Run the fleet pull-request sweep as a registered watcher check |
-| `fm-release-rollout-check.sh` | Surface failed runs of configured rollout workflows |
-| `fm-pr-state.sh`         | Read-only: print PR ownership and merge target plus reported GitHub blockers, without claiming merge readiness |
+| `fm-pr-state.sh`         | Read-only: print one line per GitHub pull-request blocker it can see, reporting on checks that have reported rather than verdicting merge-readiness |
 | `fm-pr-reviewers.sh`     | Read-only: suggest reviewers from GitHub's own author mapping of recent commits on a pull request's changed files, never requesting one |
-| `fm-ready-check.sh`     | Run a project's declared `pr:ready-check` or `.firstmate/ready-check`, read from the project checkout, in a ship worktree at the handoff boundary |
-| `fm-capability-check.sh` | Fail-closed host preflight for browser, attachment, pool, seed, and CI capabilities declared by a proof-producing brief |
 | `fm-merge-outcome-lib.sh` | Publish a confirmed merge's durable, role-routed supervision outcome                 |
 | `fm-merge-authority-lib.sh` | Resolve merge authority at the gate, persist it against the accepted canonical PR, and identity-check its later poll consumption |
 | `fm-parent-channel-lib.sh` | Resolve a secondmate home's parent channel and append a captain-facing outcome line to it at most once |
@@ -177,5 +166,3 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-voice-client.py`     | The laptop end of the spoken interface: capture, playback, and turn timing over SSH; audio devices unverified |
 | `fm_voice_frame.py`      | The wire format both machines share, copied to the laptop beside the client          |
 | `fm_voice_records.py`    | What a spoken answer may read, and the handover that queues real work                |
-
-For current state across several crews, read `bin/fm-fleet-snapshot.sh --json` once (each task's `current_state`, with every per-crew read time-bounded) instead of running `bin/fm-crew-state.sh <id>` per crew.

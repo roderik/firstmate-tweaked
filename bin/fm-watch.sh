@@ -76,20 +76,11 @@
 #                          agent, for human inspection only - never an automatic
 #                          interrupt, signal, or restart of the worker or its
 #                          tool process.
-#   stale: <window> (stopped on <cause>; auto-relaunch ...)
-#                          an idle ship or scout pane ends on a terminal harness
-#                          API error (bin/fm-harness-crash-lib.sh); the watcher
-#                          first relaunches it fresh, silently, through
-#                          bin/fm-control.sh relaunch, and surfaces this once per
-#                          pane hash only when HARNESS_CRASH_MAX_ATTEMPTS is spent
-#                          or the relaunch fails (harness_crash_relaunch)
 #   stale: <window> (unread firstmate instruction: ...)
-#                          the steering-inbox ladder spent its delivery-attempt
-#                          budget on an idle pane without an acknowledgement
 #   stale: <window> (steering-inbox ladder bookkeeping unwritable: ...)
-#                          an unhandled record's ladder cannot advance; quiet
-#                          successful attempts never wake firstmate
-#                          (bin/fm-task-inbox-lib.sh owns the ladder policy)
+#   stale: <window> (steering-inbox busy bookkeeping unwritable: ...)
+#                          steering-inbox recovery; bin/fm-task-inbox-lib.sh owns
+#                          delivery-attempt, busy-deferral, and unavailable-endpoint policy
 #   check: <script>: <out> authenticated check output, always actionable
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
@@ -243,10 +234,6 @@ WATCH_HOME_EXISTED=0
 # and wake emission (secondmate_liveness_tick below).
 # shellcheck source=/dev/null # Analyzed separately as a canonical lint root.
 . "$SCRIPT_DIR/fm-secondmate-liveness-lib.sh"
-# Terminal harness-error recognition and its relaunch ledger, driven from the
-# pane-stale path below (harness_crash_relaunch).
-# shellcheck source=bin/fm-harness-crash-lib.sh
-. "$SCRIPT_DIR/fm-harness-crash-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -380,24 +367,6 @@ SECONDMATE_LIVENESS_MAX_ATTEMPTS=${FM_SECONDMATE_LIVENESS_MAX_ATTEMPTS:-}
 case "$SECONDMATE_LIVENESS_MAX_ATTEMPTS" in ''|*[!0-9]*|0) SECONDMATE_LIVENESS_MAX_ATTEMPTS=3 ;; esac
 SECONDMATE_LIVENESS_WINDOW_SECS=${FM_SECONDMATE_LIVENESS_WINDOW_SECS:-}
 case "$SECONDMATE_LIVENESS_WINDOW_SECS" in ''|*[!0-9]*|0) SECONDMATE_LIVENESS_WINDOW_SECS=3600 ;; esac
-# A ship or scout whose idle pane ends on a known terminal harness API error
-# (bin/fm-harness-crash-lib.sh owns the signatures) is relaunched fresh through
-# bin/fm-control.sh relaunch, at most HARNESS_CRASH_MAX_ATTEMPTS times per
-# HARNESS_CRASH_WINDOW_SECS per task; past that bound, or when the relaunch
-# itself fails, the pane surfaces as an ordinary stale wake naming the error.
-# HARNESS_CRASH_TIMEOUT bounds one relaunch so a wedged one cannot stall the poll,
-# and HARNESS_CRASH_PER_POLL bounds how many relaunches one poll runs: a later
-# crashed pane stays stale and unmarked, so the next poll picks it up.
-HARNESS_CRASH_MAX_ATTEMPTS=${FM_HARNESS_CRASH_MAX_ATTEMPTS:-}
-case "$HARNESS_CRASH_MAX_ATTEMPTS" in ''|*[!0-9]*) HARNESS_CRASH_MAX_ATTEMPTS=3 ;; esac
-HARNESS_CRASH_WINDOW_SECS=${FM_HARNESS_CRASH_WINDOW_SECS:-}
-case "$HARNESS_CRASH_WINDOW_SECS" in ''|*[!0-9]*|0) HARNESS_CRASH_WINDOW_SECS=3600 ;; esac
-HARNESS_CRASH_TIMEOUT=${FM_HARNESS_CRASH_TIMEOUT:-}
-case "$HARNESS_CRASH_TIMEOUT" in ''|*[!0-9]*|0) HARNESS_CRASH_TIMEOUT=300 ;; esac
-HARNESS_CRASH_PER_POLL=${FM_HARNESS_CRASH_PER_POLL:-}
-case "$HARNESS_CRASH_PER_POLL" in ''|*[!0-9]*|0) HARNESS_CRASH_PER_POLL=1 ;; esac
-HARNESS_CRASH_POLL_RELAUNCHES=0
-FM_CONTROL_BIN=${FM_CONTROL_BIN:-$SCRIPT_DIR/fm-control.sh}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
@@ -454,13 +423,6 @@ hash_pane() {
   if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | cut -d' ' -f1; fi
 }
 
-# window_is_busy keeps its full verdict, with its task and harness, for
-# dormant_paused_wait below, so the stale triage of the same poll reads the
-# same classification instead of re-reading the harness.
-WINDOW_BUSY_TASK=
-WINDOW_BUSY_HARNESS=
-WINDOW_BUSY_VERDICT=
-
 # window_is_busy: 0 (busy) iff the task's harness is PROVABLY working, through
 # the semantic busy-state contract (bin/fm-busy-lib.sh). Only an exact busy
 # verdict returns 0: idle, unknown, and dead all return 1, so a converted
@@ -474,36 +436,14 @@ window_is_busy() {  # <window> <tail40>
   local w=$1 tail40=$2 task meta verdict
   task=$(window_to_task "$w" "$STATE")
   meta="$STATE/$task.meta"
-  WINDOW_BUSY_TASK=$task
-  WINDOW_BUSY_HARNESS=$(window_harness "$w")
   if [ -n "$task" ] && [ -f "$meta" ]; then
     verdict=$(fm_busy_classify_meta "$meta" "$task" "$STATE" "$tail40")
   else
-    verdict=$(fm_busy_classify "$(window_backend "$w")" "$w" "$WINDOW_BUSY_HARNESS" \
+    verdict=$(fm_busy_classify "$(window_backend "$w")" "$w" "$(window_harness "$w")" \
       "${task:-unknown}" "$STATE" "$tail40")
   fi
-  WINDOW_BUSY_VERDICT=$verdict
   [ "${verdict%% *}" = busy ]
 }
-
-# dormant_paused_wait: 0 when <task>'s latest declared wait is a `paused:`
-# external wait AND its harness is dormant when idle (fm_busy_idle_is_dormant
-# owns which harnesses) AND this poll classified it exactly idle. Such a worker
-# sits at its prompt and will not notice its own wait clearing, so the
-# declaration explains nothing about its silence: every path that would grant
-# a declared pause the long PAUSE_RESURFACE_SECS cadence instead treats it as
-# an undeclared quiet pane, which surfaces on first sight and then through the
-# ordinary STALE_ESCALATE_SECS wedge timer until firstmate re-engages it. A
-# captain-held transfer is untouched: that wait is on a human, not on the
-# worker's own job. Reads only the verdict window_is_busy recorded for the same
-# task this poll; no verdict for this task means not dormant.
-dormant_paused_wait() {  # <task>
-  [ -n "${1:-}" ] && [ "$WINDOW_BUSY_TASK" = "$1" ] || return 1
-  fm_busy_dormant_idle "$WINDOW_BUSY_HARNESS" "$WINDOW_BUSY_VERDICT" || return 1
-  status_is_paused "$(status_declared_wait_line "$STATE/$1.status")"
-}
-
-DORMANT_WAIT_NOTE='idle at its prompt under a declared wait - this worker runtime does not resume itself when the wait clears; re-engage it'
 
 window_kind() {
   local w=$1 meta kind
@@ -575,26 +515,14 @@ inbox_steer_escalate_unavailable() {  # <window> <task> <record>
 }
 
 # Steering-inbox loss detection, one cheap check per recorded window per poll.
-# Quiet when healthy: an absent, empty, or handled inbox costs one directory
-# glob and produces nothing. When the ladder (fm_task_inbox_due_action, the
-# policy owner) reports a due action, a busy pane just waits - the record is
-# durable and the worker will reach a turn boundary - an idle pane gets one
-# delivery attempt, and a spent attempt budget surfaces as an ordinary stale
-# wake for stuck-crewmate-recovery, and a pane whose agent is positively dead
-# or missing skips the ladder altogether: it is never typed into and surfaces
-# as that same stale wake exactly once. If the attempt's ladder write fails while
-# its record remains unhandled, that unwritable state surfaces through the same
-# stale path instead of silently re-ringing forever; acknowledgement or teardown
-# still makes the race quiet. The attempt is data-plane typing or a
-# composer-protected skip, never a wake, so normal retries keep the watcher
-# blocking. A fire-and-forget record's one retry ring follows the same busy
-# wait, also waits while the worker has an open decision or blocker of its own
-# (status_own_open_decisions), and never escalates: a dead pane just spends it.
-# Runs for secondmates
-# too: their pane-staleness exemption is about quiet panes being healthy,
-# while an unacknowledged instruction past the ladder is a stuck steer.
+# bin/fm-task-inbox-lib.sh owns delivery, busy-deferral, retry, and escalation policy.
+# Endpoint and busy checks precede delivery so recovery never types into a busy,
+# dead, or missing worker; the ring helper protects pending composer text.
+# Normal retries keep the watcher blocking rather than waking firstmate.
+# Runs for secondmates too: their pane-staleness exemption is about quiet panes
+# being healthy, while an unacknowledged instruction can still be a stuck steer.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc backend agent_state
+  local w=$1 task=$2 action verb rec count tail40 reason='' ring_rc backend agent_state
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -623,7 +551,19 @@ inbox_steer_check() {  # <window> <task>
   esac
   tail40=$(fm_backend_capture "$backend" "$w" 40 "$(window_label "$w")" 2>/dev/null) || tail40=
   if window_is_busy "$w" "$tail40"; then
-    return 0
+    [ "$verb" != retry ] || return 0
+    if ! count=$(fm_task_inbox_record_busy "$STATE" "$task" "$rec"); then
+      [ -f "$rec" ] || return 0
+      reason="stale: $w (steering-inbox busy bookkeeping unwritable: ${rec%/*}/.busy-state cannot be written while $rec stays unhandled; inspect the inbox directory)"
+    elif [ "$count" -ge "$(fm_task_inbox_busy_max)" ]; then
+      reason="stale: $w (unread firstmate instruction: stuck-busy after $count consecutive busy-deferred due doorbells; $rec stays unhandled and no doorbell was typed; inspect the worker)"
+    else
+      return 0
+    fi
+    verb=escalate
+  elif [ "$verb" != retry ] && ! fm_task_inbox_clear_busy "$STATE" "$task"; then
+    reason="stale: $w (steering-inbox busy bookkeeping unwritable: ${rec%/*}/.busy-state cannot be reset after a non-busy check; inspect the inbox directory)"
+    verb=escalate
   fi
   case "$verb" in
     ring)
@@ -657,7 +597,7 @@ inbox_steer_check() {  # <window> <task>
       triage_log "steer-inbox retry ring: $task ${rec##*/} result=$ring_rc"
       ;;
     escalate)
-      reason="stale: $w (unread firstmate instruction: $rec still unhandled after $count doorbell delivery attempts with an idle pane; inspect the worker)"
+      reason=${reason:-"stale: $w (unread firstmate instruction: $rec still unhandled after $count doorbell delivery attempts with an idle pane; inspect the worker)"}
       if [ ! -d "${rec%/*}" ] || [ ! -f "$rec" ]; then
         fm_task_inbox_due_action "$STATE" "$task" >/dev/null || true
         return 0
@@ -1193,55 +1133,6 @@ secondmate_liveness_tick() {
   [ "$failed" -eq 0 ]
 }
 
-# harness_crash_relaunch: recover a ship or scout whose idle pane ends on a
-# terminal harness API error. Returns 1 (not handled - ordinary stale triage
-# continues) when the capture shows no known error. On a match it relaunches the
-# worker fresh through bin/fm-control.sh relaunch with a continue note, ledgers
-# the attempt, logs to triage, and returns 0 without waking: an automatic fix
-# is not captain-facing. When the bound is spent or the relaunch fails it
-# surfaces one ordinary stale wake per pane hash naming the error, so a worker
-# that keeps crashing still reaches firstmate. A per-task lock keeps a
-# concurrent watcher from relaunching the same worker twice. Once this poll has
-# run HARNESS_CRASH_PER_POLL relaunches, a further match returns 0 untouched and
-# waits for the next poll.
-harness_crash_relaunch() {  # <window> <task> <tail40> <hash> <stale-marker>
-  local w=$1 task=$2 tail40=$3 h=$4 sf=$5 meta harness cause attempts out rc=0 reason note lock
-  [ -n "$task" ] || return 1
-  meta="$STATE/$task.meta"
-  [ -f "$meta" ] || return 1
-  harness=$(fm_meta_get "$meta" harness 2>/dev/null || true)
-  cause=$(fm_harness_crash_cause "$harness" "$tail40") || return 1
-  [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ] || return 0
-  [ "$HARNESS_CRASH_POLL_RELAUNCHES" -lt "$HARNESS_CRASH_PER_POLL" ] || return 0
-  lock="$STATE/.harness-crash-$task.lock"
-  fm_lock_try_acquire "$lock" || return 0
-  reason=''
-  if ! attempts=$(fm_harness_crash_recent_attempts "$STATE" "$task" "$HARNESS_CRASH_WINDOW_SECS"); then
-    reason="stale: $w (stopped on $cause; auto-relaunch ledger unreadable)"
-  elif [ "$attempts" -ge "$HARNESS_CRASH_MAX_ATTEMPTS" ]; then
-    reason="stale: $w (stopped on $cause; auto-relaunch bound spent: $attempts in ${HARNESS_CRASH_WINDOW_SECS}s)"
-  elif ! fm_harness_crash_ledger_add "$STATE" "$task" attempt; then
-    reason="stale: $w (stopped on $cause; auto-relaunch ledger unwritable)"
-  else
-    HARNESS_CRASH_POLL_RELAUNCHES=$((HARNESS_CRASH_POLL_RELAUNCHES + 1))
-    note="Your previous agent stopped on a terminal API error ($cause) that its session cannot recover from, so supervision relaunched you fresh. Continue where it stopped: read your status file and this local copy's git status and log to see how far the work got, then carry on with the task."
-    out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG"       fm_run_timed "$HARNESS_CRASH_TIMEOUT" "$FM_CONTROL_BIN" "$task" relaunch --note "$note" 2>&1) || rc=$?
-    if [ "$rc" -eq 0 ]; then
-      fm_harness_crash_ledger_add "$STATE" "$task" relaunched || true
-      rm -f "$STATE/.count-$(window_key "$w")"
-      triage_log "relaunched $task after $cause: $w"
-    else
-      fm_harness_crash_ledger_add "$STATE" "$task" failed || true
-      reason="stale: $w (stopped on $cause; auto-relaunch failed: $(printf '%s\n' "$out" | sed -n '$s/[[:space:]]\{1,\}/ /g;$p'))"
-    fi
-  fi
-  fm_lock_release "$lock" 2>/dev/null || true
-  [ -n "$reason" ] || return 0
-  fm_wake_append stale "$w" "$reason" || exit 1
-  printf '%s' "$h" > "$sf"
-  wake "$reason"
-}
-
 # Consecutive wedge-escalation count for a window past FM_WEDGE_DEMAND_INSPECT_COUNT
 # (default 3): a pane that keeps re-wedging on the SAME stale hash - each
 # escalation gets absorbed again as "still validating" one poll later, since the
@@ -1414,7 +1305,6 @@ wedge_wait_evidence() {  # <task> -> one wait_record on stdout
     return 0
   fi
   if status_is_paused "$last"; then
-    dormant_paused_wait "$task" && return 1
     if until=$(status_paused_until "$last"); then
       [ "$(date +%s)" -lt "$until" ] || return 1
     fi
@@ -1846,16 +1736,6 @@ pause_state_class() {  # <window> <task>
     crew_absorb_class "$task"
     return
   fi
-  # A dormant idle worker's pause is no wait at all (dormant_paused_wait). Only
-  # an attributed running pipeline still proves work; a crew-state `paused`
-  # read straight back off the same status line must not grant the cadence.
-  if dormant_paused_wait "$task"; then
-    rm -f "$recheck_file"
-    class=$(crew_absorb_class "$task")
-    [ "$class" = working ] || class=none
-    printf '%s' "$class"
-    return
-  fi
   # Read once past the declared-wait gate and reused by both liveness gates below,
   # so a mate's stale poll costs one metadata scan rather than one per gate, and the
   # far more common no-declaration path above still costs none.
@@ -2019,17 +1899,12 @@ captain_call_stale_bound() {  # <window-key> <task>
 # above): the status line the worker declared, and the backlog hold firstmate
 # recorded once the captain took the work in hand.
 surface_nonterminal_stale() {  # <window> <hash>
-  local win=$1 h=$2 key task last declared=1 bounded=1 throttled=1 until now reason
+  local win=$1 h=$2 key task last declared=1 bounded=1 throttled=1 until now
   key=$(window_key "$win")
   task=$(window_to_task "$win" "$STATE")
   last=$(status_declared_wait_line "$STATE/$task.status")
-  reason="stale: $win"
   STALE_WAIT_DECLARATION=
-  if dormant_paused_wait "$task"; then
-    # Not a wait (dormant_paused_wait): no throttle and no pause flag, so the
-    # same hash goes on to the ordinary wedge timer. The reason says why.
-    reason="stale: $win ($DORMANT_WAIT_NOTE)"
-  elif status_is_paused "$last"; then
+  if status_is_paused "$last"; then
     declared=0
     bounded=0
     STALE_WAIT_DECLARATION=$(stale_wait_declaration "$task")
@@ -2060,7 +1935,7 @@ surface_nonterminal_stale() {  # <window> <hash>
     bounded=0
   fi
   if [ "$throttled" -ne 0 ]; then
-    fm_wake_append stale "$win" "$reason" || exit 1
+    fm_wake_append stale "$win" "stale: $win" || exit 1
     stale_wait_record "$key"
   fi
   printf '%s' "$h" > "$STATE/.stale-$key"
@@ -2084,7 +1959,7 @@ surface_nonterminal_stale() {  # <window> <hash>
     triage_log "absorbed non-terminal stale (declared wait or open captain call already re-surfaced this window): $win"
     return 0
   fi
-  wake "$reason"
+  wake "stale: $win"
 }
 
 # Check and heartbeat cadence must survive actionable exits and restarts: the
@@ -2972,11 +2847,6 @@ EOF
           wake "$reason"
         fi
         pr_poll_control_release || exit 1
-        if fm_wake_terminal_notice_suppressed "$c" "$reason"; then
-          touch "$STATE/.last-check"
-          triage_log "suppressed a repeated terminal notice from $c for a merged, closed task"
-          continue
-        fi
         fm_wake_append check "$c" "$reason" || exit 1
         touch "$STATE/.last-check"
         wake "$reason"
@@ -3004,27 +2874,6 @@ EOF
   if [ -n "$pending" ]; then
     sleep "$SIGNAL_GRACE"
     pending=$(printf '%s\n%s' "$pending" "$(scan_signals)")
-    # Review routing is driven by the status transition itself. Only tasks
-    # explicitly configured for independent review enter the dispatch plane.
-    while IFS=$(printf '\t') read -r _seen _signature signal_file; do
-      case "$signal_file" in "$STATE"/*.status) ;; *) continue ;; esac
-      review_id=${signal_file##*/}; review_id=${review_id%.status}
-      review_meta="$STATE/$review_id.meta"
-      if [ ! -f "$review_meta" ] || ! grep -q '^review_class=' "$review_meta"; then
-        continue
-      fi
-      review_route_rc=0
-      review_attention="$STATE/$review_id.review-route-attention"
-      ( run_check_process "$SCRIPT_DIR/fm-review-route.sh" scan "$review_id" ) >/dev/null 2>&1 || review_route_rc=$?
-      if [ "$review_route_rc" -eq 0 ] || [ "$review_route_rc" -eq 3 ]; then
-        rm -f "$review_attention"
-      elif [ ! -e "$review_attention" ]; then
-        fm_wake_append check "review-route-$review_id" "review routing needs attention: task=$review_id" || exit 1
-        : > "$review_attention"
-      fi
-    done <<EOF_REVIEW_SIGNALS
-$pending
-EOF_REVIEW_SIGNALS
     # The final coalesced signal set is the watcher-carried status-change
     # trigger for this home's published summary. Start it before either
     # surfacing or absorbing the signal, but never wait on it: see
@@ -3146,7 +2995,6 @@ EOF
   # stale hash is surfaced, absorbed, or timed toward escalation once (.stale-*
   # remembers the hash already classified, or the declaration a busy pane's
   # crossed turn bound already handed to the away-mode daemon).
-  HARNESS_CRASH_POLL_RELAUNCHES=0
   while IFS= read -r w; do
     kind=$(window_kind "$w")
     task=$(window_to_task "$w" "$STATE")
@@ -3188,12 +3036,8 @@ EOF
       echo "$n" > "$cf"
       if [ "$n" -ge 2 ] && [ "$busy_now" -ne 0 ]; then
         # The pane is idle/stale at hash $h. Triage decides whether this wakes
-        # firstmate. Detection itself is unchanged from above. A worker that
-        # stopped on a terminal harness error is recovered before triage.
-        if { [ "$kind" = ship ] || [ "$kind" = scout ]; } \
-          && harness_crash_relaunch "$w" "$task" "$tail40" "$h" "$sf"; then
-          :
-        elif [ "$kind" = secondmate ]; then
+        # firstmate. Detection itself is unchanged from above.
+        if [ "$kind" = secondmate ]; then
           case "$(pause_state_class "$w" "$task")" in
             paused) handle_paused_stale "$w" "$task" "$h" ;;
             *)      clear_pause_tracking "$key" ;;
@@ -3301,8 +3145,7 @@ EOF
             esac
           else
             task=$(window_to_task "$w" "$STATE")
-            if ! dormant_paused_wait "$task" \
-              && { [ -e "$pf" ] || status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$task.status")"; }; then
+            if [ -e "$pf" ] || status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$task.status")"; then
               case "$(pause_state_class "$w" "$task")" in
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
                 working) clear_pause_state "$key"
@@ -3312,9 +3155,6 @@ EOF
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
             else
-              # A dormant idle worker's pause flag, if one survived from before
-              # this poll could classify it, no longer bounds anything.
-              [ ! -e "$pf" ] || clear_pause_state "$key"
               wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" "$task" "$h"
             fi
           fi
