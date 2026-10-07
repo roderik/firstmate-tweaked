@@ -1,0 +1,8 @@
+== /tmp/fm-lab.CZUq7W/data/t14020/brief.md
+100:Once it is committed, start the no-mistakes skill yourself immediately (Claude `/no-mistakes`, Codex `$no-mistakes`, otherwise ask your harness to invoke the no-mistakes skill) to validate; do not append `done:` or wait for firstmate to tell you to.
+112:This replaces the no-mistakes skill's advice to enrich `--intent` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
+151:Then append `done [at=<epoch>]: PR {change url} published for review` to the status file and stop. You are finished.
+== /tmp/fm-lab.CZUq7W/data/t22255/brief.md
+97:Once it is committed, start the no-mistakes skill yourself immediately (Claude `/no-mistakes`, Codex `$no-mistakes`, otherwise ask your harness to invoke the no-mistakes skill) to validate and ship a PR; do not append `done:` or wait for firstmate to tell you to.
+109:This replaces the no-mistakes skill's advice to enrich `--intent` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
+130:Then append `done [at=<epoch>]: PR {url} checks green` and stop. You are finished.
